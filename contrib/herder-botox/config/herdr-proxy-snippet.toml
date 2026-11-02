@@ -1,0 +1,17 @@
+# Proxy relay status. Silent unless prefix+u just switched the upstream, the
+# upstream is failing, or the relay is down — herdr drops an entry that prints
+# nothing, separator included. One `read` of a status line per second, no jq.
+[[ui.tab_bar_right]]
+type = "command"
+command = "$HOME/herder-botox/bin/herdr-proxy-status.sh"
+interval_seconds = 1
+timeout_seconds = 2
+
+# Re-read the upstream proxy from ~/.zshrc and move every session onto it.
+# herdr 0.8.2 has no configurable buttons or menu items — right-click menus
+# are fixed, see README — so this is a key, like prefix+y. prefix+u is unbound
+# in stock herdr.
+[[keys.command]]
+key = "prefix+u"
+type = "shell"
+command = "$HOME/herder-botox/bin/herdr-proxy-reload.sh"

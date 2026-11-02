@@ -1,0 +1,12 @@
+[Unit]
+Description=herder-botox proxy relay: one local proxy for agent sessions, upstream from ~/.zshrc
+
+[Service]
+Environment=HERDR_PROXY_PORT=__PORT__
+ExecStart=/usr/bin/env python3 -I __RELAY__
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

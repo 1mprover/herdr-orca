@@ -1,0 +1,192 @@
+# ── herder-botox ────────────────────────────────────────────────────────────
+# Appended to ~/.config/herdr/config.toml by install.sh.
+# Stock herdr 0.8.2 configuration — no patched binary. Everything used here is
+# in the 0.8.2 released feature set, checked against the installed binary:
+# no `machine` token and no conditional token `rules`, both of which landed
+# after the release.
+
+# >>> herder-botox ui-keys
+# The Agents panel widens with the sidebar. Stock defaults are 26/18/36;
+# sidebar_max_width has no hard ceiling in herdr, so raise it as far as your
+# terminal allows. Drag the sidebar's right edge to move between min and max.
+sidebar_width = 46
+sidebar_min_width = 24
+sidebar_max_width = 72
+
+tab_bar_right_separator = " │ "
+
+# Distinct shapes per state, not just colors: × blocked, ◐ working, ✓ done,
+# ○ idle, · unknown. With the default "dots" every state except idle is the
+# same ● and only the color separates them.
+status_indicators = "symbols"
+# <<< herder-botox ui-keys
+
+# >>> herder-botox ui-tables
+# Fleet pulse: a glyph that turns once a second while anything is working, then
+# blocked and free counts. This is the only affordable animation — herdr's own
+# state icons are static by design. One process per second, measured at ~0.01s.
+[[ui.tab_bar_right]]
+type = "command"
+command = "$HOME/herder-botox/bin/herdr-agents-status.sh"
+interval_seconds = 1
+timeout_seconds = 2
+
+# Context rollup: one sparkline cell per session, ordered by workspace/pane so
+# a session keeps its position. Monochrome — the tab row strips ANSI.
+[[ui.tab_bar_right]]
+type = "command"
+command = "$HOME/herder-botox/bin/herdr-ctx-total.sh"
+interval_seconds = 5
+timeout_seconds = 2
+
+# Remaining subscription limits. Account-global, so shown once here rather than
+# repeated on every session row. Moves slowly, so it polls less often.
+[[ui.tab_bar_right]]
+type = "command"
+command = "$HOME/herder-botox/bin/herdr-limits.sh"
+interval_seconds = 30
+timeout_seconds = 2
+
+# Transient copy confirmation for prefix+y below. Prints nothing except for a
+# few seconds after a copy, and herdr drops a status entry whose command prints
+# nothing — its separator included — so this segment is invisible the rest of
+# the time.
+[[ui.tab_bar_right]]
+type = "command"
+command = "$HOME/herder-botox/bin/herdr-copy-flash.sh"
+interval_seconds = 1
+timeout_seconds = 2
+
+# Wraps each session's tab name onto the $tab1/$tab2/$tab3 rows below. Prints
+# nothing — it is here only because herdr's tab-row timer is the one scheduler
+# available without a daemon, and an entry that prints nothing is dropped
+# whole. Idle sessions and renames stay correct because this does not depend on
+# any agent rendering.
+[[ui.tab_bar_right]]
+type = "command"
+command = "$HOME/herder-botox/bin/herdr-tabname-report.sh"
+interval_seconds = 5
+timeout_seconds = 5
+
+# Copy the current tab's name — the generated task slug an agent session runs
+# under — with prefix+y.
+#
+# herdr copies a mouse selection made inside a pane, but a tab name lives in
+# the tab row and the Agents panel, which are herdr's own chrome: there is
+# nothing there to select, and no CLI writes the clipboard either. So the
+# script does it. herdr sets HERDR_ACTIVE_TAB_ID for custom commands, which is
+# how it knows which tab you meant.
+#
+# type = "shell" is spawned detached with no tty, which rules out herdr's own
+# clipboard path (pane OSC 52 -> server -> attached client), so the script
+# falls back to wl-copy/xclip/xsel/pbcopy/clip.exe and the tab row above is
+# what confirms it. `description` is NOT set here: that field only exists after
+# 0.8.2.
+[[keys.command]]
+key = "prefix+y"
+type = "shell"
+command = "$HOME/herder-botox/bin/herdr-copy-tab.sh"
+
+# The same thing through a popup instead. A popup is a real pane, so the script
+# gets a tty and copies with OSC 52, which herdr forwards to the terminal you
+# are attached with — the right clipboard even over `herdr --remote` — and
+# confirms with herdr's own built-in toast, no tab-row entry needed. Costs a
+# brief popup flash. Swap the type above, or keep both on separate keys.
+#
+#   [[keys.command]]
+#   key = "prefix+shift+y"
+#   type = "popup"
+#   command = "$HOME/herder-botox/bin/herdr-copy-tab.sh"
+#   width = "40%"
+#   height = "3"
+
+[ui.sidebar.agents]
+row_gap = 0
+# Baseline layout for agents that do not report anything.
+rows = [
+  ["state_icon", "workspace", "tab"],
+  ["agent"],
+]
+
+# rows_by_agent REPLACES rows for that agent — it does not extend it.
+[ui.sidebar.agents.rows_by_agent]
+claude = [
+  # `agent` is gone from this row on purpose: "◐ claude · Opus 5 (1M context) ·
+  # xhigh" is 38 columns and row 0 has 33 at a 36-wide sidebar, so herdr was
+  # squeezing every flexible token on it. Without it the row is 29 and fits,
+  # and the model name already says which agent this is.
+  ["state_icon", "$model", "$eff"],
+  # state_text carries the label reported for the CURRENT state, and herdr
+  # colors it per state on its own: green idle, teal done, yellow working, red
+  # blocked. Only bold/dim are overridden here — setting fg would replace that
+  # semantic color with one fixed value. dim = false is what makes the green
+  # "free, give me work" label actually shout.
+  #
+  # The gauge then arrives as "███████▊░░ 78%" in exactly ONE of the five ctx
+  # tokens, chosen by severity; the other four are cleared on every report.
+  # herdr 0.8.2 has inline styles but no conditional rules, so the band picks
+  # its color by picking its token, and herdr drops the four empty ones along
+  # with their separators. Bands are 30 / 60 / 80 / 90 percent, straight from
+  # the critical point in your statusline script.
+  [
+    { token = "state_text", bold = true, dim = false },
+    { token = "$ctxcalm", dim = true },
+    { token = "$ctxwarn", fg = "#ffd700" },
+    { token = "$ctxhigh", fg = "#ff8700" },
+    { token = "$ctxcrit", fg = "#d70000" },
+    { token = "$ctxfull", fg = "#d70000", bold = true },
+  ],
+  # The tab name, wrapped by bin/herdr-tabname-report.sh into as many of these
+  # rows as it needs. A row whose every token is missing is dropped entirely —
+  # `(!resolved.is_empty()).then_some(resolved)`, src/ui/sidebar/tokens.rs:119 —
+  # so the unused rows cost nothing, which is why the reporter CLEARS the spare
+  # tokens instead of reporting them empty: an empty-but-present token would
+  # keep its row and leave a blank line.
+  #
+  # The built-in `tab` token cannot be used here: it is a single line and herdr
+  # truncates it with "…" at the row budget. workspace rides the last name row
+  # so that a short name costs no extra line; the third line is a remainder and
+  # is short, so it does not fight the workspace for width.
+  #
+  # The name is the one thing on the card you read first, so it is in the
+  # palette's main text color (#cdd6f4, catppuccin `text`,
+  # src/app/state.rs:124) — not bold, which read as too heavy. Without the override it renders like every custom
+  # token: overlay0 grey plus DIM (src/ui/sidebar.rs:1519), the dimmest thing
+  # on the card. The fg has to be explicit: herdr's focus-aware name_style only
+  # reaches built-in tokens such as `workspace`, never a $token.
+  [{ token = "$tab1", fg = "#cdd6f4", dim = false }],
+  [{ token = "$tab2", fg = "#cdd6f4", dim = false }],
+  [{ token = "$tab3", fg = "#cdd6f4", dim = false }, "workspace"],
+]
+
+# ── Alternative layouts ─────────────────────────────────────────────────────
+# Keep Claude's own session title. It costs one more row per session, and at
+# six sessions in a half-height Agents panel that is where scrolling starts:
+#
+#   claude = [
+#     ["state_icon", "$model", "$eff"],
+#     [ ...state_text and the ctx bands... ],
+#     ["terminal_title_stripped"],
+#     ["$tab1"], ["$tab2"], ["$tab3", "workspace"],
+#   ]
+#
+# One line for the name, truncated as before — set HERDR_TABNAME_LINES=1 and
+# use a single ["$tab1", "workspace"] row.
+#
+# Compact, model line and gauge merged onto one row:
+#
+#   claude = [
+#     ["state_icon", "agent"],
+#     ["$model", "$eff", { token = "$ctxcalm", dim = true }, ... ],
+#     ["workspace", "tab"],
+#   ]
+#
+# No gauge — plain percent plus breakdown. $ctx is the bare number, reported
+# unconditionally, so one uncolored token is enough:
+#
+#   claude = [
+#     ["state_icon", "agent", "$model", "$eff"],
+#     ["$ctx", "$ctxb"],
+#     ["terminal_title_stripped"],
+#     ["workspace", "tab"],
+#   ]
