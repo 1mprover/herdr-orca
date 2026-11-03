@@ -1091,6 +1091,57 @@
           "description": "Expanded Space sidebar layout. Entries may be token strings or inline { token, fg, bold, dim, rules } style tables. Text-valued built-ins and $name metadata tokens accept up to 16 ordered rules using equals, contains, starts_with, gt, or lt; the first match overrides specified styles. Text conditions optionally accept ignore_case for ASCII matching; numeric conditions require full finite numbers. state_icon and git_status accept fixed styles only. At most 16 rows and 16 tokens per row."
         },
         {
+          "key": "ui.sidebar.layout",
+          "type": "enum",
+          "default": "\"panels\"",
+          "description": "Expanded desktop sidebar layout. panels shows Spaces above Agents with a draggable divider. cards shows one list of workspace cards, each with its tabs and panes nested as a tree and agents inline, sorted into collapsible sections with a filter field on top. The collapsed rail, mobile layout and multi-machine sidebar are unchanged.",
+          "values": [
+            "panels",
+            "cards"
+          ]
+        },
+        {
+          "key": "ui.sidebar.cards.group_by",
+          "type": "enum",
+          "default": "\"status\"",
+          "description": "Initial card sections. status groups by needs input, done, working and idle; project groups by repository; none keeps one flat list. Pinned cards always come first. Clicking the label in the sidebar header cycles it and the choice is remembered.",
+          "values": [
+            "status",
+            "project",
+            "none"
+          ]
+        },
+        {
+          "key": "ui.sidebar.cards.agent_rows",
+          "type": "list of token rows",
+          "default": "[[\"state_icon\", \"agent\", \"state_text\"], [\"terminal_title_stripped\"]]",
+          "description": "Rows drawn for each agent inside its workspace card, using the same tokens and inline styles as ui.sidebar.agents.rows. Workspace lines use ui.sidebar.spaces.rows."
+        },
+        {
+          "key": "ui.sidebar.cards.card_gap",
+          "type": "integer",
+          "default": "1",
+          "description": "Blank terminal rows between cards. Sections are always separated by at least one row."
+        },
+        {
+          "key": "ui.sidebar.cards.section_labels",
+          "type": "table of strings",
+          "default": "{}",
+          "description": "Section title overrides keyed by pinned, blocked, done, working, idle, no_repo and rest, for example { blocked = \"waiting\" }."
+        },
+        {
+          "key": "ui.sidebar.cards.footer_command",
+          "type": "string",
+          "default": "\"\"",
+          "description": "Shell command whose first output line is shown at the bottom of the card sidebar, such as remaining subscription limits. Runs in the client via sh -c with a 5 second timeout; escape sequences are stripped. Empty disables it."
+        },
+        {
+          "key": "ui.sidebar.cards.footer_interval_seconds",
+          "type": "integer",
+          "default": "30",
+          "description": "Seconds between footer_command runs, from 1 to 3600."
+        },
+        {
           "key": "ui.accent",
           "type": "color",
           "default": "\"cyan\"",

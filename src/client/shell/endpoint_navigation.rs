@@ -12,7 +12,9 @@ impl ClientShellState {
     }
 
     pub(super) fn endpoint_workspace_is_draggable(&self, press: &ClientWorkspacePress) -> bool {
-        press.endpoint_id == self.active_endpoint_id
+        // Card order comes from sections, so dragging would not stick.
+        !self.cards_layout_active()
+            && press.endpoint_id == self.active_endpoint_id
             && self
                 .snapshot
                 .as_deref()

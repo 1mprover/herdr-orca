@@ -588,6 +588,7 @@ impl ClientShellState {
                     search_focused: true,
                     ..
                 }))
+                | Some(ClientShellOverlay::SidebarFilter)
         )
     }
 
@@ -789,6 +790,14 @@ impl ClientShellState {
         let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
         if code == KeyCode::Enter && modifiers.is_empty() {
             self.accept_navigate_workspace(outcome);
+            return;
+        }
+        if code == KeyCode::Char('/')
+            && modifiers.difference(KeyModifiers::SHIFT).is_empty()
+            && self.cards_layout_active()
+        {
+            self.begin_sidebar_filter();
+            outcome.repaint = true;
             return;
         }
         if self.workspace_preview_action_blocked() {

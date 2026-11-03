@@ -28,6 +28,11 @@ pub(super) struct ClientChromePreferences {
     pub(super) collapsed_groups: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) remote_collapsed_groups: Vec<ClientRemoteCollapsedGroups>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) cards_group_by: Option<crate::config::CardsGroupBy>,
+    /// Workspace ids pinned to the top of the card sidebar, in pin order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) pinned_workspaces: Vec<String>,
 }
 
 pub(super) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {

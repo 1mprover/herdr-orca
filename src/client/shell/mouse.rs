@@ -1383,6 +1383,20 @@ impl ClientShellState {
                 return;
             }
         }
+        if matches!(self.overlay, Some(ClientShellOverlay::SidebarFilter)) {
+            match mouse.kind {
+                MouseEventKind::Down(_) if super::contains(self.hits.card_filter, point) => {
+                    return;
+                }
+                // Clicking anywhere else keeps the filter text, stops editing,
+                // and lets the click do what it normally does.
+                MouseEventKind::Down(_) => {
+                    self.overlay = None;
+                    outcome.repaint = true;
+                }
+                _ => {}
+            }
+        }
         if matches!(self.overlay, Some(ClientShellOverlay::GlobalMenu(_))) {
             let row_hit = self
                 .hits
@@ -1714,7 +1728,11 @@ impl ClientShellState {
             }
             return;
         }
-        if self.overlay.is_some() {
+        if self
+            .overlay
+            .as_ref()
+            .is_some_and(|overlay| !matches!(overlay, ClientShellOverlay::SidebarFilter))
+        {
             if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
                 return;
             }
@@ -1847,10 +1865,26 @@ impl ClientShellState {
                     .hits
                     .tabs
                     .iter()
+                    .chain(&self.hits.card_tabs)
                     .find(|(rect, _)| super::contains(*rect, point))
                     .map(|(_, tab_id)| tab_id.clone());
                 if let Some(tab_id) = tab_id {
                     self.open_tab_context_menu(tab_id, mouse.column, mouse.row);
+                    outcome.repaint = true;
+                    return;
+                }
+                let card_pane_id = self
+                    .cards_layout_active()
+                    .then(|| {
+                        self.hits
+                            .agents
+                            .iter()
+                            .find(|(rect, _)| super::contains(*rect, point))
+                            .map(|(_, pane_id)| pane_id.clone())
+                    })
+                    .flatten();
+                if let Some(pane_id) = card_pane_id {
+                    self.open_pane_context_menu(pane_id, mouse.column, mouse.row);
                     outcome.repaint = true;
                     return;
                 }
@@ -2020,6 +2054,9 @@ impl ClientShellState {
                             }
                         }
                     }
+                    return;
+                }
+                if self.handle_card_sidebar_click(point, outcome) {
                     return;
                 }
                 if super::contains(self.hits.agent_sort_toggle, point) {

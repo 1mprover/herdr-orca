@@ -475,11 +475,95 @@ impl Default for SpacesSidebarConfig {
     }
 }
 
+/// How the expanded desktop sidebar is organized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarLayoutConfig {
+    /// Spaces on top, Agents below, split by a draggable divider.
+    #[default]
+    Panels,
+    /// One list of workspace cards with their agents nested inside, grouped
+    /// into collapsible sections.
+    Cards,
+}
+
+/// Which sections the card layout sorts workspaces into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CardsGroupBy {
+    /// Needs input, done, working, idle.
+    #[default]
+    Status,
+    /// One section per repository.
+    Project,
+    /// A flat list in workspace order.
+    None,
+}
+
+impl CardsGroupBy {
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::Status => Self::Project,
+            Self::Project => Self::None,
+            Self::None => Self::Status,
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::Project => "project",
+            Self::None => "flat",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CardsSidebarConfig {
+    pub group_by: CardsGroupBy,
+    /// Rows drawn for each agent inside its workspace card. The workspace
+    /// lines themselves come from `[ui.sidebar.spaces].rows`.
+    #[serde(deserialize_with = "deserialize_sidebar_rows")]
+    pub agent_rows: AgentSidebarRows,
+    /// Blank rows between cards.
+    pub card_gap: u16,
+    /// Overrides for section titles, keyed by `pinned`, `blocked`, `done`,
+    /// `working`, `idle` and `no_repo`.
+    pub section_labels: std::collections::BTreeMap<String, String>,
+    /// Shell command whose first output line is shown at the bottom of the
+    /// card sidebar, e.g. remaining subscription limits. Empty disables it.
+    pub footer_command: String,
+    pub footer_interval_seconds: u64,
+}
+
+impl Default for CardsSidebarConfig {
+    fn default() -> Self {
+        Self {
+            group_by: CardsGroupBy::Status,
+            agent_rows: vec![
+                vec![
+                    AgentSidebarToken::StateIcon,
+                    AgentSidebarToken::Agent,
+                    AgentSidebarToken::StateText,
+                ],
+                vec![AgentSidebarToken::TerminalTitleStripped],
+            ],
+            card_gap: 1,
+            section_labels: Default::default(),
+            footer_command: String::new(),
+            footer_interval_seconds: 30,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SidebarConfig {
     pub agents: AgentsSidebarConfig,
     pub spaces: SpacesSidebarConfig,
+    pub layout: SidebarLayoutConfig,
+    pub cards: CardsSidebarConfig,
 }
 
 #[cfg(test)]
@@ -511,6 +595,55 @@ mod tests {
             ]
         );
         assert_eq!(config.spaces.row_gap, 0);
+        assert_eq!(config.layout, SidebarLayoutConfig::Panels);
+        assert_eq!(config.cards.group_by, CardsGroupBy::Status);
+    }
+
+    #[test]
+    fn parses_card_layout_settings() {
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[ui.sidebar]
+layout = "cards"
+
+[ui.sidebar.cards]
+group_by = "project"
+card_gap = 0
+agent_rows = [["state_icon", "agent", "$ctx"]]
+section_labels = { blocked = "ждёт ответа" }
+footer_command = "echo 5h 80%"
+footer_interval_seconds = 10
+"#,
+        )
+        .expect("card layout config");
+        let sidebar = &config.ui.sidebar;
+        assert_eq!(sidebar.layout, SidebarLayoutConfig::Cards);
+        assert_eq!(sidebar.cards.group_by, CardsGroupBy::Project);
+        assert_eq!(sidebar.cards.card_gap, 0);
+        assert_eq!(
+            sidebar.cards.agent_rows,
+            vec![vec![
+                AgentSidebarToken::StateIcon,
+                AgentSidebarToken::Agent,
+                AgentSidebarToken::Custom("ctx".into()),
+            ]]
+        );
+        assert_eq!(
+            sidebar
+                .cards
+                .section_labels
+                .get("blocked")
+                .map(String::as_str),
+            Some("ждёт ответа")
+        );
+        assert_eq!(sidebar.cards.footer_command, "echo 5h 80%");
+        assert_eq!(sidebar.cards.footer_interval_seconds, 10);
+        assert!(toml::from_str::<SidebarConfig>("layout = \"grid\"").is_err());
+        assert!(toml::from_str::<SidebarConfig>("[cards]\ngroup_by = \"repo\"").is_err());
+        assert_eq!(
+            CardsGroupBy::Status.next().next().next(),
+            CardsGroupBy::Status
+        );
     }
 
     #[test]

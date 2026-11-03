@@ -119,6 +119,8 @@ impl ClientShellState {
                         last_child: false,
                     })
                     .collect()
+            } else if self.cards_layout_active() {
+                self.card_navigation_entries(snapshot)
             } else {
                 let collapsed_groups = if mobile && surface_available {
                     &empty_collapsed_groups

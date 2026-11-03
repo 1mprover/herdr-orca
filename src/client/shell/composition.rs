@@ -77,9 +77,13 @@ impl ClientShellState {
             reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
             dragged_workspace_id: None,
             workspace_drop_indicator_row: None,
+            pinned_workspaces: &self.pinned_workspaces,
+            sidebar_filter: &self.sidebar_filter,
+            sidebar_filter_editing: matches!(self.overlay, Some(ClientShellOverlay::SidebarFilter)),
+            cards_footer: self.cards_footer.text(),
         };
         if let Some(snapshot) = local_snapshot {
-            render::render_sidebar(
+            render::render_expanded_sidebar(
                 &mut buffer,
                 sidebar,
                 snapshot,
@@ -233,6 +237,13 @@ impl ClientShellState {
                 reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
                 dragged_workspace_id,
                 workspace_drop_indicator_row,
+                pinned_workspaces: &self.pinned_workspaces,
+                sidebar_filter: &self.sidebar_filter,
+                sidebar_filter_editing: matches!(
+                    self.overlay,
+                    Some(ClientShellOverlay::SidebarFilter)
+                ),
+                cards_footer: self.cards_footer.text(),
             },
         );
         self.hits.panes = surface
@@ -650,6 +661,8 @@ impl ClientShellState {
                 occlusion.cover(rendered.area);
                 self.hits.context_menu_rows = rendered.menu_rows;
                 None
+            } else if let ClientShellOverlay::SidebarFilter = overlay {
+                self.hits.card_filter_cursor.clone()
             } else if let ClientShellOverlay::GlobalMenu(menu) = overlay {
                 let rendered = render::render_global_menu(
                     &mut composed,

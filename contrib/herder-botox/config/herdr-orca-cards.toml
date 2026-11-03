@@ -1,0 +1,24 @@
+# ── herdr-orca: карточная боковая панель ─────────────────────────────────────
+# Только для бинаря из этого форка (ветка orca-main). Стоковый herdr этих
+# ключей не знает. Вставить в ~/.config/herdr/config.toml: `layout` — в
+# существующую секцию [ui.sidebar] (или создать её), остальное — как есть.
+
+[ui.sidebar]
+layout = "cards"
+
+[ui.sidebar.cards]
+group_by = "status"
+card_gap = 1
+agent_rows = [["state_icon", "agent", "state_text"], ["terminal_title_stripped"]]
+# Остаток лимитов подписки внизу панели (тот же скрипт, что в tab_bar_right).
+footer_command = "$HOME/herder-botox/bin/herdr-limits.sh"
+footer_interval_seconds = 30
+
+[ui.sidebar.cards.section_labels]
+pinned = "закреплённые"
+blocked = "ждёт ответа"
+done = "готово"
+working = "работает"
+idle = "простаивает"
+no_repo = "без репозитория"
+rest = "остальные"

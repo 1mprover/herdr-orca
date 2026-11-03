@@ -454,6 +454,10 @@ impl ClientShellState {
         if self.insert_worktree_overlay_text(text) {
             return true;
         }
+        if matches!(self.overlay, Some(ClientShellOverlay::SidebarFilter)) {
+            self.insert_sidebar_filter_text(text);
+            return true;
+        }
         match self.overlay.as_mut() {
             Some(ClientShellOverlay::Rename(rename)) => {
                 rename.input.insert(text);
@@ -482,6 +486,11 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         use crossterm::event::KeyModifiers;
+
+        if matches!(self.overlay, Some(ClientShellOverlay::SidebarFilter)) {
+            self.route_sidebar_filter_key(key, outcome);
+            return;
+        }
 
         if matches!(self.overlay, Some(ClientShellOverlay::Onboarding)) {
             if matches!(

@@ -248,6 +248,26 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) reveal_navigation_workspace: &'a mut bool,
     pub(super) dragged_workspace_id: Option<&'a str>,
     pub(super) workspace_drop_indicator_row: Option<u16>,
+    pub(super) pinned_workspaces: &'a [String],
+    pub(super) sidebar_filter: &'a TextEditor,
+    pub(super) sidebar_filter_editing: bool,
+    pub(super) cards_footer: Option<&'a str>,
+}
+
+/// The expanded single-endpoint sidebar, in whichever layout is configured.
+pub(super) fn render_expanded_sidebar(
+    buffer: &mut Buffer,
+    area: Rect,
+    snapshot: &ClientShellSnapshot,
+    config: &ClientShellConfig,
+    state: &mut ShellRenderState<'_>,
+    hits: &mut ShellHitMap,
+) {
+    if config.sidebar_layout == crate::config::SidebarLayoutConfig::Cards {
+        super::cards_sidebar::render_cards_sidebar(buffer, area, snapshot, config, state, hits);
+    } else {
+        render_sidebar(buffer, area, snapshot, config, state, hits);
+    }
 }
 
 pub(super) fn render_shell(
@@ -299,7 +319,7 @@ pub(super) fn render_shell(
                 &mut hits,
             );
         } else {
-            render_sidebar(
+            render_expanded_sidebar(
                 buffer,
                 layout.sidebar,
                 snapshot,
@@ -327,6 +347,10 @@ pub(super) fn render_shell(
         hits.workspace_scrollbar = Rect::default();
         hits.agent_scrollbar = Rect::default();
         hits.agent_sort_toggle = Rect::default();
+        hits.card_group_toggle = Rect::default();
+        hits.card_sections.clear();
+        hits.card_tabs.clear();
+        hits.card_filter = Rect::default();
         hits.new_workspace = Rect::default();
         hits.machines.clear();
         hits.workspaces.clear();

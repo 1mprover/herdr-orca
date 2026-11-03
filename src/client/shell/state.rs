@@ -23,6 +23,8 @@ pub(crate) struct ClientShellConfig {
     pub(super) hide_tab_bar_when_single_tab: bool,
     pub(super) spaces: SpacesSidebarConfig,
     pub(super) agents: crate::config::AgentsSidebarConfig,
+    pub(super) sidebar_layout: crate::config::SidebarLayoutConfig,
+    pub(super) cards: crate::config::CardsSidebarConfig,
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
     pub(super) sound_enabled: bool,
@@ -100,6 +102,11 @@ pub(super) struct ShellHitMap {
     pub(super) agent_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) agent_max_scroll: usize,
     pub(super) agent_sort_toggle: Rect,
+    pub(super) card_group_toggle: Rect,
+    pub(super) card_sections: Vec<(Rect, String)>,
+    pub(super) card_tabs: Vec<(Rect, String)>,
+    pub(super) card_filter: Rect,
+    pub(super) card_filter_cursor: Option<crate::protocol::CursorState>,
     pub(super) sidebar_divider: Rect,
     pub(super) sidebar_section_divider: Rect,
     pub(super) sidebar_toggle: Rect,
@@ -291,6 +298,7 @@ pub(super) enum ClientShellOverlayKind {
     ContextMenu,
     GlobalMenu,
     Settings,
+    SidebarFilter,
 }
 
 #[derive(Debug)]
@@ -525,6 +533,7 @@ pub(super) enum ClientContextMenuAction {
     Zoom,
     ToggleRightClickPassthrough,
     ClosePane,
+    TogglePin,
 }
 
 #[derive(Debug)]
@@ -536,6 +545,8 @@ pub(super) enum ClientContextMenuTarget {
         has_worktree_children: bool,
         close_group: bool,
         collapsed: bool,
+        /// `Some` only when the card sidebar is showing, where pinning applies.
+        pinned: Option<bool>,
     },
     Tab {
         tab_id: String,
@@ -594,6 +605,8 @@ pub(super) enum ClientShellOverlay {
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
     Settings(ClientSettingsOverlay),
+    /// Typing into the card sidebar's filter field.
+    SidebarFilter,
 }
 
 impl ClientShellOverlay {
@@ -612,6 +625,7 @@ impl ClientShellOverlay {
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
+            Self::SidebarFilter => ClientShellOverlayKind::SidebarFilter,
         }
     }
 }
@@ -876,6 +890,10 @@ pub(crate) struct ClientShellState {
     pub(super) sidebar_section_split: f32,
     pub(super) sidebar_section_split_manual: bool,
     pub(super) agent_panel_sort_manual: bool,
+    pub(super) cards_group_by_manual: bool,
+    pub(super) pinned_workspaces: Vec<String>,
+    pub(super) sidebar_filter: TextEditor,
+    pub(super) cards_footer: super::cards_sidebar::CardsFooterRuntime,
     pub(super) last_sidebar_divider_click: Option<std::time::Instant>,
     pub(super) chrome_drag: Option<ClientChromeDrag>,
     pub(super) workspace_press: Option<ClientWorkspacePress>,
@@ -1019,6 +1037,9 @@ impl ClientShellState {
         if let Some(sort) = preferences.agent_panel_sort {
             config.agent_panel_sort = sort;
         }
+        if let Some(group_by) = preferences.cards_group_by {
+            config.cards.group_by = group_by;
+        }
         let mut remote_collapsed_groups = HashMap::<ClientEndpointId, HashSet<String>>::new();
         for saved in preferences.remote_collapsed_groups {
             let Ok(profile_id) = crate::client::endpoint::ProfileId::parse(saved.profile_id) else {
@@ -1050,6 +1071,10 @@ impl ClientShellState {
             sidebar_section_split,
             sidebar_section_split_manual: preferences.sidebar_section_split.is_some(),
             agent_panel_sort_manual: preferences.agent_panel_sort.is_some(),
+            cards_group_by_manual: preferences.cards_group_by.is_some(),
+            pinned_workspaces: preferences.pinned_workspaces,
+            sidebar_filter: TextEditor::default(),
+            cards_footer: Default::default(),
             last_sidebar_divider_click: None,
             chrome_drag: None,
             workspace_press: None,
@@ -1188,7 +1213,9 @@ impl ClientShellState {
         snapshot: &ClientShellSnapshot,
     ) -> Vec<WorkspaceEntry> {
         let empty_collapsed_groups = HashSet::new();
-        if self.mobile_layout_active() {
+        if self.cards_layout_active() {
+            self.card_navigation_entries(snapshot)
+        } else if self.mobile_layout_active() {
             render::workspace_entries(snapshot, &empty_collapsed_groups)
         } else {
             render::workspace_entries(
@@ -1206,6 +1233,10 @@ impl ClientShellState {
             .iter()
             .any(|hit| hit.workspace_id == workspace_id)
         {
+            return;
+        }
+        if self.cards_layout_active() {
+            self.reveal_card_workspace(workspace_id);
             return;
         }
         let target = self.snapshot.as_deref().and_then(|snapshot| {

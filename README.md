@@ -1,5 +1,7 @@
 # herdr
 
+> **Fork note:** this is herdr-orca, herdr with an Orca-style card sidebar. See [FORK.md](FORK.md).
+
 
 <p align="center">
   <img src="assets/logo.png" alt="herdr" width="100" />
