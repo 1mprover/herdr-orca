@@ -142,12 +142,6 @@ fn cards_keep_workspace_order_and_the_focused_card_lists_its_tabs() {
     let mut state = cards_state();
     let rows = sidebar_rows(&mut state);
 
-    assert!(rows[0].contains("WORKSPACES"), "{rows:#?}");
-    assert!(rows[0].contains('⌕') && rows[0].contains('≡'), "{rows:#?}");
-    assert!(rows[1].contains("× 1 waiting"), "{rows:#?}");
-    assert!(rows[1].contains("◐ 1 working"), "{rows:#?}");
-    assert!(rows[2].starts_with('─'), "{rows:#?}");
-
     // Workspace order, not state order: the waiting card is not pulled up
     // and the idle one is not pushed down.
     let orca = row_of(&rows, "1 herdr-orca");
@@ -278,7 +272,7 @@ fn pinned_cards_come_first_and_the_filter_narrows_the_list() {
     let rows = sidebar_rows(&mut state);
     let notes = row_of(&rows, "3 notes");
     let orca = row_of(&rows, "1 herdr-orca");
-    assert_eq!(notes, 3, "{rows:#?}");
+    assert_eq!(notes, 4, "{rows:#?}");
     // One blank row separates pinned cards from the rest.
     assert_eq!(orca, notes + 3, "{rows:#?}");
     assert!(rows[notes + 2].is_empty(), "{rows:#?}");
@@ -288,8 +282,8 @@ fn pinned_cards_come_first_and_the_filter_narrows_the_list() {
     assert!(rows.iter().any(|row| row.contains("bitrix")));
     assert!(!rows.iter().any(|row| row.contains("herdr-orca")));
     assert!(!rows.iter().any(|row| row.contains("notes")));
-    // The filter takes the summary row's place while it is set.
-    assert!(rows[1].contains("BIT"), "{rows:#?}");
+    // The filter stays in the search field while it is set.
+    assert!(rows[0].contains("BIT"), "{rows:#?}");
     let order = state.card_navigation_entries(state.snapshot.as_deref().unwrap());
     assert_eq!(order.len(), 1);
     assert_eq!(order[0].index, 1);
@@ -361,7 +355,7 @@ fn the_search_button_opens_a_filter_that_takes_typing() {
     assert_eq!(state.sidebar_filter.as_str(), "not");
     let frame = state.compose(120, 40).expect("frame");
     let filter = state.hits.card_filter;
-    assert_eq!(filter.y, 1);
+    assert_eq!(filter.y, 0);
     assert!(frame
         .cursor
         .as_ref()
@@ -379,7 +373,8 @@ fn the_search_button_opens_a_filter_that_takes_typing() {
     assert!(state.overlay.is_none());
     assert!(state.sidebar_filter.is_empty());
     let rows = sidebar_rows(&mut state);
-    assert!(rows[1].contains("waiting"), "{rows:#?}");
+    assert!(rows[0].contains("search"), "{rows:#?}");
+    assert!(rows[2].contains("× 1"), "{rows:#?}");
 }
 
 #[test]
@@ -557,4 +552,25 @@ fn claude_has_its_own_glyph() {
         cards_rows::agent_glyph(&claude, &state.config.palette).0,
         "◆"
     );
+}
+
+#[test]
+fn the_header_has_a_search_field_and_counters_beside_the_title() {
+    let mut state = cards_state();
+    let rows = sidebar_rows(&mut state);
+    assert!(
+        rows[0].contains('⌕') && rows[0].contains("search"),
+        "{rows:#?}"
+    );
+    assert!(rows[0].ends_with('≡'), "{rows:#?}");
+    assert!(rows[1].is_empty(), "{rows:#?}");
+    assert!(rows[2].contains("WORKSPACES"), "{rows:#?}");
+    assert!(
+        rows[2].contains("× 1") && rows[2].contains("◐ 1"),
+        "{rows:#?}"
+    );
+    assert!(rows[3].is_empty(), "{rows:#?}");
+    // The search field and the counters are click targets on their rows.
+    assert_eq!(state.hits.card_filter_toggle.y, 0);
+    assert!(state.hits.card_status.iter().all(|(rect, _)| rect.y == 2));
 }

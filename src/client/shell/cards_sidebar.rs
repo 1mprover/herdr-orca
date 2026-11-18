@@ -24,8 +24,8 @@ use super::render::{
 /// Section collapse state shares `collapsed_groups` with worktree groups, so
 /// card sections carry a prefix that no repository key can start with.
 pub(super) const SECTION_KEY_PREFIX: &str = "cards:";
-/// The title row, the summary (or filter) row and the rule under them.
-const HEADER_ROWS: u16 = 3;
+/// The search field, a blank row, the title with its counters, a blank row.
+const HEADER_ROWS: u16 = 4;
 /// Widest tab label in the focused card's tree before it is shortened.
 const TAB_LABEL_MAX: usize = 12;
 const SUMMARY_STATUSES: [AgentStatus; 3] = [
@@ -539,17 +539,16 @@ pub(super) fn render_cards_sidebar(
         return;
     }
     let dim = Style::default().fg(palette.overlay0);
-    let filtering = !state.sidebar_filter.trim().is_empty();
 
-    put_text(
-        buffer,
-        content.x,
+    let field = Rect::new(
+        content.x.saturating_add(1),
         content.y,
-        content.width,
-        &format!(" {}", cards.label("title", "workspaces").to_uppercase()),
-        dim.add_modifier(Modifier::BOLD),
+        content.width.saturating_sub(5),
+        1,
     );
+    render_search_field(buffer, field, config, state, hits);
     if config.mouse_capture && content.width > 8 {
+        hits.card_filter_toggle = field;
         let group = Rect::new(content.right().saturating_sub(3), content.y, 2, 1);
         put_text(
             buffer,
@@ -564,39 +563,10 @@ pub(super) fn render_cards_sidebar(
             }),
         );
         hits.card_group_toggle = group;
-        let search = Rect::new(group.x.saturating_sub(3), content.y, 2, 1);
-        put_text(
-            buffer,
-            search.x,
-            search.y,
-            1,
-            "⌕",
-            Style::default().fg(if state.sidebar_filter_editing || filtering {
-                palette.accent
-            } else {
-                palette.overlay0
-            }),
-        );
-        hits.card_filter_toggle = search;
-    }
-
-    if content.height > 1 {
-        let row = Rect::new(content.x, content.y + 1, content.width, 1);
-        if state.sidebar_filter_editing || filtering {
-            render_filter_row(buffer, row, config, state, hits);
-        } else {
-            render_summary_row(buffer, row, snapshot, config, hits);
-        }
     }
     if content.height > 2 {
-        put_text(
-            buffer,
-            content.x,
-            content.y + 2,
-            content.width,
-            &"─".repeat(content.width as usize),
-            Style::default().fg(palette.surface_dim),
-        );
+        let row = Rect::new(content.x, content.y + 2, content.width, 1);
+        render_title_row(buffer, row, snapshot, config, hits);
     }
 
     let footer_y = content.bottom().saturating_sub(1);
@@ -708,50 +678,78 @@ pub(super) fn render_cards_sidebar(
     );
 }
 
-fn render_filter_row(
+/// The search field: a hint while idle, the editor while typing, and the
+/// filter text while a filter is set.
+fn render_search_field(
     buffer: &mut Buffer,
-    row: Rect,
+    field: Rect,
     config: &ClientShellConfig,
     state: &mut ShellRenderState<'_>,
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
-    hits.card_filter = row;
+    if field.width < 4 {
+        return;
+    }
+    let base = Style::default().bg(palette.surface0);
     put_text(
         buffer,
-        row.x.saturating_add(1),
-        row.y,
+        field.x,
+        field.y,
+        field.width,
+        &" ".repeat(field.width as usize),
+        base,
+    );
+    let filtering = !state.sidebar_filter.trim().is_empty();
+    let active = state.sidebar_filter_editing || filtering;
+    put_text(
+        buffer,
+        field.x.saturating_add(1),
+        field.y,
         1,
         "⌕",
-        Style::default().fg(palette.accent),
+        base.fg(if active {
+            palette.accent
+        } else {
+            palette.overlay1
+        }),
     );
-    let field = Rect::new(
-        row.x.saturating_add(3),
-        row.y,
-        row.width.saturating_sub(4),
+    let text = Rect::new(
+        field.x.saturating_add(4),
+        field.y,
+        field.width.saturating_sub(5),
         1,
     );
     if state.sidebar_filter_editing {
-        hits.card_filter_cursor = super::text_editor::render(
+        hits.card_filter = field;
+        hits.card_filter_cursor =
+            super::text_editor::render(buffer, text, state.sidebar_filter, base.fg(palette.text));
+    } else if filtering {
+        hits.card_filter = field;
+        put_text(
             buffer,
-            field,
-            state.sidebar_filter,
-            Style::default().fg(palette.text).bg(palette.surface0),
+            text.x,
+            text.y,
+            text.width,
+            state.sidebar_filter.as_str(),
+            base.fg(palette.accent),
         );
     } else {
         put_text(
             buffer,
-            field.x,
-            row.y,
-            field.width,
-            state.sidebar_filter.as_str(),
-            Style::default().fg(palette.accent),
+            text.x,
+            text.y,
+            text.width,
+            config.cards.label("search", "search"),
+            base.fg(palette.overlay1),
         );
     }
 }
 
-/// Agent counts by state; each count jumps to the next agent in that state.
-fn render_summary_row(
+/// The title on the left and agent counts by state on the right; each count
+/// jumps to the next agent in that state. Counts drop their words when the
+/// row is too narrow for them.
+fn render_title_row(
     buffer: &mut Buffer,
     row: Rect,
     snapshot: &ClientShellSnapshot,
@@ -759,6 +757,20 @@ fn render_summary_row(
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
+    let title = format!(
+        " {}",
+        config.cards.label("title", "workspaces").to_uppercase()
+    );
+    put_text(
+        buffer,
+        row.x,
+        row.y,
+        row.width,
+        &title,
+        Style::default()
+            .fg(palette.overlay0)
+            .add_modifier(Modifier::BOLD),
+    );
     let counts = agent_counts(snapshot);
     let mut chips = SUMMARY_STATUSES
         .iter()
@@ -777,7 +789,6 @@ fn render_summary_row(
             format!("{icon} {count}")
         }
     };
-    let available = row.width.saturating_sub(2);
     let width_of = |words: bool| {
         chips
             .iter()
@@ -785,8 +796,13 @@ fn render_summary_row(
             .sum::<u16>()
             + 2 * chips.len().saturating_sub(1) as u16
     };
+    let available = row.width.saturating_sub(display_width(&title) + 3);
     let words = width_of(true) <= available;
-    let mut x = row.x.saturating_add(1);
+    let width = width_of(words);
+    if width > available {
+        return;
+    }
+    let mut x = row.right().saturating_sub(1 + width);
     for (status, count) in chips {
         let text = chip_text(status, count, words);
         let start = x;
