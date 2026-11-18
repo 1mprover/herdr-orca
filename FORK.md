@@ -111,6 +111,9 @@ more = "ещё"
 agents_one = "агент"
 agents_few = "агента"
 agents_many = "агентов"
+terminals_one = "терминал"
+terminals_few = "терминала"
+terminals_many = "терминалов"
 minutes = "м"
 ```
 

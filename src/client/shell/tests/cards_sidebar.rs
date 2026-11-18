@@ -748,3 +748,104 @@ fn the_counter_row_collapses_sessions_and_it_sticks() {
         "{rows:#?}"
     );
 }
+
+fn focus_notes(snapshot: &mut ClientShellSnapshot) {
+    for workspace in &mut snapshot.workspaces {
+        workspace.focused = workspace.workspace_id == "ws_3";
+    }
+    snapshot.focused_workspace_id = Some("ws_3".into());
+    snapshot.focused_tab_id = Some("tab_4".into());
+    snapshot.focused_pane_id = Some("pane_5".into());
+}
+
+#[test]
+fn a_growing_focused_card_scrolls_into_view() {
+    let mut state = cards_state();
+    let mut snapshot = fleet();
+    focus_notes(&mut snapshot);
+    state.set_snapshot(Box::new(snapshot.clone()));
+    // The list fits exactly: orca 5 rows, bitrix 3, notes 6, two gaps.
+    let rows = sidebar_rows_at(&mut state, 21);
+    assert!(rows.iter().any(|row| row.contains('╰')), "{rows:#?}");
+
+    // Three splits in notes, the last one focused.
+    let pane = snapshot.panes[4].clone();
+    for n in 0..3 {
+        snapshot.panes.push(ClientShellPane {
+            pane_id: format!("pane_n{n}"),
+            focused: false,
+            foreground_cwd: Some(format!("/src/pane_n{n}")),
+            ..pane.clone()
+        });
+    }
+    snapshot.focused_pane_id = Some("pane_n2".into());
+    state.set_snapshot(Box::new(snapshot));
+    let rows = sidebar_rows_at(&mut state, 21);
+    assert!(
+        rows.iter().any(|row| row.contains("▎    $ 1 · pane_n2")),
+        "{rows:#?}"
+    );
+    assert!(rows.iter().any(|row| row.contains('╰')), "{rows:#?}");
+}
+
+#[test]
+fn unfolding_the_focused_card_scrolls_it_into_view() {
+    let mut state = cards_state();
+    let mut snapshot = fleet();
+    focus_notes(&mut snapshot);
+    let pane = snapshot.panes[4].clone();
+    for n in 0..3 {
+        snapshot.panes.push(ClientShellPane {
+            pane_id: format!("pane_n{n}"),
+            focused: false,
+            foreground_cwd: Some(format!("/src/pane_n{n}")),
+            ..pane.clone()
+        });
+    }
+    state.set_snapshot(Box::new(snapshot));
+    state.collapsed_groups.insert("cards:sessions:ws_3".into());
+    sidebar_rows_at(&mut state, 21);
+    let (toggle, _) = state.hits.card_session_toggles[0].clone();
+    let mut outcome = ClientShellInput::default();
+    assert!(state.handle_card_sidebar_click((toggle.x + 6, toggle.y), &mut outcome));
+    let rows = sidebar_rows_at(&mut state, 21);
+    assert!(rows.iter().any(|row| row.contains("pane_n2")), "{rows:#?}");
+    assert!(rows.iter().any(|row| row.contains('╰')), "{rows:#?}");
+}
+
+#[test]
+fn keyboard_navigation_reveals_the_whole_selected_card() {
+    let mut state = cards_state();
+    state.mode = ClientShellMode::Navigate;
+    // orca takes 8 rows and the gap 1, so only bitrix's name fits.
+    sidebar_rows_at(&mut state, 15);
+    assert_eq!(workspace_hit(&state, "ws_2").height, 1);
+    // The first step selects the focused card, the second moves to bitrix.
+    state.move_navigate_workspace(1);
+    sidebar_rows_at(&mut state, 15);
+    state.move_navigate_workspace(1);
+    let rows = sidebar_rows_at(&mut state, 15);
+    assert_eq!(workspace_hit(&state, "ws_2").height, 3, "{rows:#?}");
+}
+
+#[test]
+fn a_shorter_terminal_keeps_the_focused_card_in_view() {
+    let mut state = cards_state();
+    let mut snapshot = fleet();
+    focus_notes(&mut snapshot);
+    let pane = snapshot.panes[4].clone();
+    for n in 0..3 {
+        snapshot.panes.push(ClientShellPane {
+            pane_id: format!("pane_n{n}"),
+            focused: false,
+            foreground_cwd: Some(format!("/src/pane_n{n}")),
+            ..pane.clone()
+        });
+    }
+    snapshot.focused_pane_id = Some("pane_n2".into());
+    state.set_snapshot(Box::new(snapshot));
+    sidebar_rows_at(&mut state, 40);
+    let rows = sidebar_rows_at(&mut state, 21);
+    assert!(rows.iter().any(|row| row.contains("pane_n2")), "{rows:#?}");
+    assert!(rows.iter().any(|row| row.contains('╰')), "{rows:#?}");
+}

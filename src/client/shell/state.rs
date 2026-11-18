@@ -1477,6 +1477,14 @@ impl ClientShellState {
         {
             self.reveal_focused_workspace = true;
         }
+        // The focused card lists its sessions, so it grows with a new pane and
+        // its highlighted row moves with the focused pane.
+        if self.cards_layout_active()
+            && self.snapshot.as_deref().map(focused_card_shape)
+                != Some(focused_card_shape(&snapshot))
+        {
+            self.reveal_focused_workspace = true;
+        }
         if tab_layout_changed
             || self
                 .snapshot
@@ -1941,4 +1949,16 @@ impl ClientShellState {
         self.hits = ShellHitMap::default();
         self.host_mouse_pixels = None;
     }
+}
+
+/// What decides the focused card's height and highlighted row: the focused
+/// pane and the number of panes in the focused workspace.
+fn focused_card_shape(snapshot: &ClientShellSnapshot) -> (Option<&str>, usize) {
+    let workspace = snapshot.focused_workspace_id.as_deref();
+    let panes = snapshot
+        .panes
+        .iter()
+        .filter(|pane| Some(pane.workspace_id.as_str()) == workspace)
+        .count();
+    (snapshot.focused_pane_id.as_deref(), panes)
 }

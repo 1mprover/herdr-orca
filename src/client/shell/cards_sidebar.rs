@@ -927,24 +927,43 @@ fn render_card_list(
         .collect::<Vec<_>>();
     let mut metrics =
         super::scroll::list_scroll_metrics(&heights, &gaps, body.height, *state.workspace_scroll);
-    if std::mem::take(state.reveal_focused_workspace) {
-        if let Some(target) = items.iter().position(
-            |item| matches!(item, BuiltItem::Card(card) if snapshot.workspaces[card.index].focused),
-        ) {
-            *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
-                &heights,
-                &gaps,
-                body.height,
-                *state.workspace_scroll,
-                target,
-            );
-            metrics = super::scroll::list_scroll_metrics(
-                &heights,
-                &gaps,
-                body.height,
-                *state.workspace_scroll,
-            );
-        }
+    // Keyboard navigation reveals the selected card, everything else the
+    // focused one; a card that is only partly visible counts as hidden.
+    let reveal_navigation = std::mem::take(state.reveal_navigation_workspace);
+    let reveal_focus = std::mem::take(state.reveal_focused_workspace);
+    let card_position = |wanted: &dyn Fn(&ClientShellWorkspace) -> bool| {
+        items.iter().position(
+            |item| matches!(item, BuiltItem::Card(card) if wanted(&snapshot.workspaces[card.index])),
+        )
+    };
+    let selected = reveal_navigation
+        .then(|| {
+            card_position(&|workspace| {
+                state.selected_workspace_id.is_some_and(|target| {
+                    target.matches(state.active_endpoint_id, &workspace.workspace_id)
+                })
+            })
+        })
+        .flatten();
+    let reveal_target = selected.or_else(|| {
+        reveal_focus
+            .then(|| card_position(&|workspace| workspace.focused))
+            .flatten()
+    });
+    if let Some(target) = reveal_target {
+        *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
+            &heights,
+            &gaps,
+            body.height,
+            *state.workspace_scroll,
+            target,
+        );
+        metrics = super::scroll::list_scroll_metrics(
+            &heights,
+            &gaps,
+            body.height,
+            *state.workspace_scroll,
+        );
     }
     hits.workspace_max_scroll = metrics.max_offset_from_bottom;
     hits.workspace_scroll_metrics = Some(metrics);
@@ -1410,6 +1429,8 @@ impl ClientShellState {
     /// Folds or unfolds a card's session list, forgetting the folds of
     /// workspaces that have since closed.
     fn toggle_card_sessions(&mut self, workspace_id: &str) {
+        // An unfolded card may now reach past the bottom of the list.
+        self.reveal_focused_workspace = true;
         self.toggle_collapsed_group(
             &ClientEndpointId::Local,
             format!("{SESSIONS_KEY_PREFIX}{workspace_id}"),

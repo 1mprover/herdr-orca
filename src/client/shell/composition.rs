@@ -164,6 +164,10 @@ impl ClientShellState {
             self.reveal_navigation_workspace = true;
             self.reveal_mobile_workspace = true;
         }
+        // A shorter terminal can push the focused card's lower rows out of view.
+        if self.last_composed_size != Some((cols, rows)) && self.cards_layout_active() {
+            self.reveal_focused_workspace = true;
+        }
         self.last_composed_size = Some((cols, rows));
         let valid_navigation_target = self.mode == ClientShellMode::Navigate
             && self
