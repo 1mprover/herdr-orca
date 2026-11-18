@@ -106,7 +106,9 @@ pub(super) struct ShellHitMap {
     pub(super) card_sections: Vec<(Rect, String)>,
     pub(super) card_tabs: Vec<(Rect, String)>,
     pub(super) card_filter: Rect,
+    pub(super) card_filter_toggle: Rect,
     pub(super) card_filter_cursor: Option<crate::protocol::CursorState>,
+    pub(super) card_status: Vec<(Rect, crate::api::schema::AgentStatus)>,
     pub(super) sidebar_divider: Rect,
     pub(super) sidebar_section_divider: Rect,
     pub(super) sidebar_toggle: Rect,
@@ -893,7 +895,8 @@ pub(crate) struct ClientShellState {
     pub(super) cards_group_by_manual: bool,
     pub(super) pinned_workspaces: Vec<String>,
     pub(super) sidebar_filter: TextEditor,
-    pub(super) cards_footer: super::cards_sidebar::CardsFooterRuntime,
+    pub(super) cards_footer: super::cards_footer::CardsFooterRuntime,
+    pub(super) cards_clock: super::cards_activity::AgentActivityClock,
     pub(super) last_sidebar_divider_click: Option<std::time::Instant>,
     pub(super) chrome_drag: Option<ClientChromeDrag>,
     pub(super) workspace_press: Option<ClientWorkspacePress>,
@@ -1075,6 +1078,9 @@ impl ClientShellState {
             pinned_workspaces: preferences.pinned_workspaces,
             sidebar_filter: TextEditor::default(),
             cards_footer: Default::default(),
+            cards_clock: super::cards_activity::AgentActivityClock::seeded(
+                preferences.agent_state_since,
+            ),
             last_sidebar_divider_click: None,
             chrome_drag: None,
             workspace_press: None,
@@ -1350,6 +1356,13 @@ impl ClientShellState {
             })
         {
             return;
+        }
+        if self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Cards {
+            self.cards_clock.observe(
+                &snapshot.boot_id,
+                &snapshot.agents,
+                std::time::SystemTime::now(),
+            );
         }
         // Screen revisions restart per connection. Keep the displayed surface for selection
         // content comparisons, but retire speculative frames from the old connection.

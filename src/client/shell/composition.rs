@@ -81,6 +81,8 @@ impl ClientShellState {
             sidebar_filter: &self.sidebar_filter,
             sidebar_filter_editing: matches!(self.overlay, Some(ClientShellOverlay::SidebarFilter)),
             cards_footer: self.cards_footer.text(),
+            cards_clock: &self.cards_clock,
+            cards_now: std::time::SystemTime::now(),
         };
         if let Some(snapshot) = local_snapshot {
             render::render_expanded_sidebar(
@@ -244,6 +246,8 @@ impl ClientShellState {
                     Some(ClientShellOverlay::SidebarFilter)
                 ),
                 cards_footer: self.cards_footer.text(),
+                cards_clock: &self.cards_clock,
+                cards_now: std::time::SystemTime::now(),
             },
         );
         self.hits.panes = surface

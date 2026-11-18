@@ -509,6 +509,9 @@ impl ClientShellState {
     }
 
     fn workspace_drop_target_at(&self, point: (u16, u16)) -> Option<(Option<String>, u16)> {
+        if self.cards_layout_active() {
+            return self.card_drop_target_at(point);
+        }
         if self.hits.workspace_body.height == 0
             || point.1 < self.hits.workspace_body.y.saturating_sub(1)
             || point.1 >= self.hits.new_workspace.y
@@ -1853,6 +1856,12 @@ impl ClientShellState {
                 if !self.config.mouse_capture {
                     return;
                 }
+                // Tab lines sit inside their card's workspace hit.
+                if let Some(tab_id) = self.card_tab_at(point) {
+                    self.open_tab_context_menu(tab_id, mouse.column, mouse.row);
+                    outcome.repaint = true;
+                    return;
+                }
                 let workspace_id = (!self.sidebar_collapsed)
                     .then(|| self.active_endpoint_workspace_at(point))
                     .flatten();
@@ -1865,26 +1874,10 @@ impl ClientShellState {
                     .hits
                     .tabs
                     .iter()
-                    .chain(&self.hits.card_tabs)
                     .find(|(rect, _)| super::contains(*rect, point))
                     .map(|(_, tab_id)| tab_id.clone());
                 if let Some(tab_id) = tab_id {
                     self.open_tab_context_menu(tab_id, mouse.column, mouse.row);
-                    outcome.repaint = true;
-                    return;
-                }
-                let card_pane_id = self
-                    .cards_layout_active()
-                    .then(|| {
-                        self.hits
-                            .agents
-                            .iter()
-                            .find(|(rect, _)| super::contains(*rect, point))
-                            .map(|(_, pane_id)| pane_id.clone())
-                    })
-                    .flatten();
-                if let Some(pane_id) = card_pane_id {
-                    self.open_pane_context_menu(pane_id, mouse.column, mouse.row);
                     outcome.repaint = true;
                     return;
                 }

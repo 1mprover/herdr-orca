@@ -1,16 +1,21 @@
-//! The card sidebar: one list of workspace cards with their tabs and panes
-//! nested inside, sorted into collapsible sections (pinned, then by status or
-//! project), with a filter field on top and an optional status line below.
+//! The card sidebar: a stable list of compact workspace cards. Each card shows
+//! its lead agent's state, what that agent is doing and for how long; the
+//! focused card unfolds into its tabs. Pinned cards come first, a summary row
+//! counts agents by state, and an optional status line sits above the footer.
+//!
+//! Cards never move because an agent changed state: the order is the
+//! workspace order (or repository sections), so a card stays where you left
+//! it.
+
+use std::time::SystemTime;
 
 use super::*;
 use crate::api::schema::AgentStatus;
-use crate::config::{AgentsSidebarConfig, CardsGroupBy, CardsSidebarConfig};
-use crate::ui::{ResolvedToken, ResolvedTokenKind};
-use ratatui::{
-    text::{Line, Span},
-    widgets::{Paragraph, Widget},
-};
+use crate::config::{CardsGroupBy, CardsSidebarConfig};
+use crate::protocol::{ClientShellAgent, ClientShellPane};
+use crate::ui::truncate_end;
 
+use super::cards_activity::{format_age, AgentActivityClock};
 use super::render::{
     display_width, put_right_text, put_segment, put_text, render_sidebar_background,
     ShellRenderState,
@@ -19,7 +24,15 @@ use super::render::{
 /// Section collapse state shares `collapsed_groups` with worktree groups, so
 /// card sections carry a prefix that no repository key can start with.
 pub(super) const SECTION_KEY_PREFIX: &str = "cards:";
-const HEADER_ROWS: u16 = 2;
+/// The title row, the summary (or filter) row and the rule under them.
+const HEADER_ROWS: u16 = 3;
+/// Widest tab label in the focused card's tree before it is shortened.
+const TAB_LABEL_MAX: usize = 12;
+const SUMMARY_STATUSES: [AgentStatus; 3] = [
+    AgentStatus::Blocked,
+    AgentStatus::Done,
+    AgentStatus::Working,
+];
 
 pub(super) struct CardsView<'a> {
     pub(super) group_by: CardsGroupBy,
@@ -33,31 +46,28 @@ pub(super) enum CardItem {
     Section {
         key: String,
         label: String,
-        status: Option<AgentStatus>,
         count: usize,
         collapsed: bool,
     },
+    /// The blank row between pinned cards and the rest.
+    Divider,
     Card {
         index: usize,
     },
 }
 
-fn section_label(cards: &CardsSidebarConfig, id: &str, fallback: &str) -> String {
-    cards
-        .section_labels
-        .get(id)
-        .filter(|label| !label.trim().is_empty())
-        .cloned()
-        .unwrap_or_else(|| fallback.to_owned())
-}
-
-fn status_section(status: AgentStatus) -> (&'static str, &'static str) {
+fn status_key(status: AgentStatus) -> (&'static str, &'static str) {
     match status {
-        AgentStatus::Blocked => ("blocked", "needs input"),
+        AgentStatus::Blocked => ("blocked", "waiting"),
         AgentStatus::Done => ("done", "done"),
         AgentStatus::Working => ("working", "working"),
         AgentStatus::Idle | AgentStatus::Unknown => ("idle", "idle"),
     }
+}
+
+fn status_word(cards: &CardsSidebarConfig, status: AgentStatus) -> &str {
+    let (key, fallback) = status_key(status);
+    cards.label(key, fallback)
 }
 
 pub(super) fn workspace_matches(
@@ -99,8 +109,9 @@ pub(super) fn workspace_matches(
             })
 }
 
-/// Sections and cards in display order. Collapsed sections keep the focused
-/// card visible; a non-empty filter shows every match regardless of collapse.
+/// Cards in display order: pinned first, then workspace order or one section
+/// per repository. A collapsed section keeps the focused card visible, and a
+/// non-empty filter shows every match regardless of collapse.
 pub(super) fn card_items(
     snapshot: &ClientShellSnapshot,
     cards: &CardsSidebarConfig,
@@ -124,7 +135,10 @@ pub(super) fn card_items(
             }
         }
     }
-    let rest = (0..snapshot.workspaces.len())
+    // The classic list's order keeps linked worktrees next to their repository.
+    let rest = super::sidebar::workspace_entries(snapshot, &HashSet::new())
+        .into_iter()
+        .map(|entry| entry.index)
         .filter(|index| {
             !view
                 .pinned
@@ -133,39 +147,15 @@ pub(super) fn card_items(
         })
         .collect::<Vec<_>>();
 
-    let mut groups: Vec<(String, String, Option<AgentStatus>, Vec<usize>)> = Vec::new();
-    if !pinned.is_empty() {
-        groups.push((
-            "pinned".to_owned(),
-            section_label(cards, "pinned", "pinned"),
-            None,
-            pinned,
-        ));
+    let mut items = pinned
+        .iter()
+        .map(|index| CardItem::Card { index: *index })
+        .collect::<Vec<_>>();
+    if !pinned.is_empty() && !rest.is_empty() {
+        items.push(CardItem::Divider);
     }
     match view.group_by {
-        CardsGroupBy::Status => {
-            for status in [
-                AgentStatus::Blocked,
-                AgentStatus::Done,
-                AgentStatus::Working,
-                AgentStatus::Idle,
-            ] {
-                let (id, fallback) = status_section(status);
-                let members = rest
-                    .iter()
-                    .copied()
-                    .filter(|index| {
-                        status_section(snapshot.workspaces[*index].agent_status).0 == id
-                    })
-                    .collect();
-                groups.push((
-                    format!("status:{id}"),
-                    section_label(cards, id, fallback),
-                    Some(status),
-                    members,
-                ));
-            }
-        }
+        CardsGroupBy::None => items.extend(rest.into_iter().map(|index| CardItem::Card { index })),
         CardsGroupBy::Project => {
             let mut projects: Vec<(String, String, Vec<usize>)> = Vec::new();
             for index in rest {
@@ -175,7 +165,7 @@ pub(super) fn card_items(
                     project.2.push(index);
                 } else {
                     let label = worktree.map_or_else(
-                        || section_label(cards, "no_repo", "no repo"),
+                        || cards.label("no_repo", "no repo").to_owned(),
                         |worktree| worktree.label.clone(),
                     );
                     projects.push((key.to_owned(), label, vec![index]));
@@ -184,42 +174,20 @@ pub(super) fn card_items(
             // Workspaces outside any repository go last.
             projects.sort_by_key(|project| project.0.is_empty());
             for (key, label, members) in projects {
-                groups.push((format!("project:{key}"), label, None, members));
-            }
-        }
-        CardsGroupBy::None => {
-            if groups.is_empty() {
-                return rest
-                    .into_iter()
-                    .map(|index| CardItem::Card { index })
-                    .collect();
-            }
-            groups.push((
-                "rest".to_owned(),
-                section_label(cards, "rest", "others"),
-                None,
-                rest,
-            ));
-        }
-    }
-
-    let mut items = Vec::new();
-    for (id, label, status, members) in groups {
-        if members.is_empty() {
-            continue;
-        }
-        let key = format!("{SECTION_KEY_PREFIX}{id}");
-        let collapsed = !filtering && view.collapsed_groups.contains(&key);
-        items.push(CardItem::Section {
-            key,
-            label,
-            status,
-            count: members.len(),
-            collapsed,
-        });
-        for index in members {
-            if !collapsed || snapshot.workspaces[index].focused {
-                items.push(CardItem::Card { index });
+                let key = format!("{SECTION_KEY_PREFIX}project:{key}");
+                let collapsed = !filtering && view.collapsed_groups.contains(&key);
+                items.push(CardItem::Section {
+                    key,
+                    label,
+                    count: members.len(),
+                    collapsed,
+                });
+                items.extend(
+                    members
+                        .into_iter()
+                        .filter(|index| !collapsed || snapshot.workspaces[*index].focused)
+                        .map(|index| CardItem::Card { index }),
+                );
             }
         }
     }
@@ -236,46 +204,9 @@ pub(super) fn card_workspace_order(
         .into_iter()
         .filter_map(|item| match item {
             CardItem::Card { index } => Some(index),
-            CardItem::Section { .. } => None,
+            CardItem::Section { .. } | CardItem::Divider => None,
         })
         .collect()
-}
-
-enum LineTarget {
-    Workspace,
-    Tab(String),
-    Pane(String),
-}
-
-enum LineBody {
-    Space(Vec<ResolvedToken>),
-    Agent {
-        tokens: Vec<ResolvedToken>,
-        status: AgentStatus,
-        focused: bool,
-    },
-    Tab {
-        label: String,
-        focused: bool,
-    },
-    Pane {
-        label: String,
-        focused: bool,
-    },
-}
-
-struct CardLine {
-    prefix: String,
-    body: LineBody,
-    target: LineTarget,
-}
-
-fn cards_agents_config(cards: &CardsSidebarConfig) -> AgentsSidebarConfig {
-    AgentsSidebarConfig {
-        rows: cards.agent_rows.clone(),
-        rows_by_agent: Default::default(),
-        row_gap: 0,
-    }
 }
 
 fn basename(path: &str) -> Option<&str> {
@@ -285,7 +216,7 @@ fn basename(path: &str) -> Option<&str> {
         .filter(|name| !name.is_empty())
 }
 
-fn pane_label(pane: &crate::protocol::ClientShellPane) -> String {
+fn pane_label(pane: &ClientShellPane) -> String {
     pane.label
         .as_deref()
         .filter(|label| !label.is_empty())
@@ -295,167 +226,300 @@ fn pane_label(pane: &crate::protocol::ClientShellPane) -> String {
         .to_owned()
 }
 
-/// Drops rows that would print nothing, such as an agent with no title yet.
-fn non_empty_rows(rows: Vec<Vec<ResolvedToken>>) -> Vec<Vec<ResolvedToken>> {
-    rows.into_iter()
-        .map(|row| {
-            row.into_iter()
-                .filter(|token| match &token.kind {
-                    ResolvedTokenKind::TerminalTitle(value)
-                    | ResolvedTokenKind::Pane(value)
-                    | ResolvedTokenKind::Custom(value) => !value.trim().is_empty(),
-                    _ => true,
-                })
-                .collect::<Vec<_>>()
-        })
-        .filter(|row| !row.is_empty())
-        .collect()
+fn agent_name(agent: &ClientShellAgent) -> &str {
+    agent
+        .display_agent
+        .as_deref()
+        .or(agent.name.as_deref())
+        .or(agent.agent.as_deref())
+        .unwrap_or("agent")
 }
 
-fn card_lines(
-    snapshot: &ClientShellSnapshot,
-    index: usize,
-    config: &ClientShellConfig,
-    agents: &AgentsSidebarConfig,
-) -> Vec<CardLine> {
-    let Some(workspace) = snapshot.workspaces.get(index) else {
-        return Vec::new();
-    };
-    let mut lines = Vec::new();
-    for (row_index, row) in
-        super::sidebar::workspace_rows(workspace, workspace.agent_status, false, &config.spaces)
-            .into_iter()
-            .enumerate()
-    {
-        let prefix = if row_index == 0 {
-            ""
-        } else if matches!(
-            row.first().map(|token| &token.kind),
-            Some(ResolvedTokenKind::Branch(_))
-        ) {
-            "  ⎇ "
-        } else {
-            "  "
-        };
-        lines.push(CardLine {
-            prefix: prefix.to_owned(),
-            body: LineBody::Space(row),
-            target: LineTarget::Workspace,
-        });
-    }
-    if lines.is_empty() {
-        lines.push(CardLine {
-            prefix: String::new(),
-            body: LineBody::Space(vec![
-                ResolvedToken {
-                    kind: ResolvedTokenKind::StateIcon,
-                    style: Default::default(),
-                },
-                ResolvedToken {
-                    kind: ResolvedTokenKind::Workspace(workspace.label.clone()),
-                    style: Default::default(),
-                },
-            ]),
-            target: LineTarget::Workspace,
-        });
-    }
+/// What the agent is doing: its terminal title, else its state in words.
+fn agent_activity<'a>(cards: &'a CardsSidebarConfig, agent: &'a ClientShellAgent) -> &'a str {
+    agent
+        .terminal_title_stripped
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| status_word(cards, agent.agent_status))
+}
 
-    let id = workspace.workspace_id.as_str();
-    let tabs = snapshot
-        .tabs
-        .iter()
-        .filter(|tab| tab.workspace_id == id)
-        .collect::<Vec<_>>();
-    let show_tabs = tabs.len() > 1 || tabs.iter().any(|tab| tab.custom_label);
-    for (tab_position, tab) in tabs.iter().enumerate() {
-        let last_tab = tab_position + 1 == tabs.len();
-        let panes = snapshot
-            .panes
-            .iter()
-            .filter(|pane| pane.tab_id == tab.tab_id)
-            .collect::<Vec<_>>();
-        let is_agent = |pane_id: &str| snapshot.agents.iter().any(|agent| agent.pane_id == pane_id);
-        // A lone shell adds nothing the tab line does not already say.
-        let shown = if panes.len() > 1 {
-            panes
-        } else {
-            panes
-                .into_iter()
-                .filter(|pane| is_agent(pane.pane_id.as_str()))
-                .collect()
-        };
-        let child_base = if show_tabs {
-            lines.push(CardLine {
-                prefix: format!("  {} ", if last_tab { "└" } else { "├" }),
-                body: LineBody::Tab {
-                    label: tab.label.clone(),
-                    focused: tab.focused,
-                },
-                target: LineTarget::Tab(tab.tab_id.clone()),
-            });
-            if last_tab {
-                "     "
-            } else {
-                "  │  "
-            }
-        } else {
-            "  "
-        };
-        for (pane_position, pane) in shown.iter().enumerate() {
-            let last_pane = pane_position + 1 == shown.len();
-            let branch = format!("{child_base}{} ", if last_pane { "└" } else { "├" });
-            let continuation = format!("{child_base}{}  ", if last_pane { "  " } else { "│ " });
-            if let Some(row) =
-                super::agent_sidebar::agent_row_with(snapshot, &pane.pane_id, agents, None)
-            {
-                let mut rows = non_empty_rows(row.rows);
-                if rows.is_empty() {
-                    rows.push(vec![ResolvedToken {
-                        kind: ResolvedTokenKind::StateIcon,
-                        style: Default::default(),
-                    }]);
-                }
-                for (row_index, tokens) in rows.into_iter().enumerate() {
-                    lines.push(CardLine {
-                        prefix: if row_index == 0 {
-                            branch.clone()
-                        } else {
-                            continuation.clone()
-                        },
-                        body: LineBody::Agent {
-                            tokens,
-                            status: row.status,
-                            focused: row.focused,
-                        },
-                        target: LineTarget::Pane(pane.pane_id.clone()),
-                    });
-                }
-            } else {
-                lines.push(CardLine {
-                    prefix: branch,
-                    body: LineBody::Pane {
-                        label: pane_label(pane),
-                        focused: pane.focused,
-                    },
-                    target: LineTarget::Pane(pane.pane_id.clone()),
-                });
-            }
-        }
+/// The agent a card speaks for: the most urgent state, then the most recent
+/// change.
+fn lead_agent<'a>(
+    agents: &[&'a ClientShellAgent],
+    clock: &AgentActivityClock,
+) -> Option<&'a ClientShellAgent> {
+    agents.iter().copied().max_by(|left, right| {
+        status_priority(left.agent_status)
+            .cmp(&status_priority(right.agent_status))
+            .then_with(|| clock.since(&left.pane_id).cmp(&clock.since(&right.pane_id)))
+    })
+}
+
+/// Shows a path relative to the home directory as `~/...`.
+fn display_path(path: &str, home: Option<&str>) -> String {
+    match home.filter(|home| !home.is_empty()) {
+        Some(home) if path == home => "~".to_owned(),
+        Some(home) => path
+            .strip_prefix(home)
+            .filter(|rest| rest.starts_with('/'))
+            .map_or_else(|| path.to_owned(), |rest| format!("~{rest}")),
+        None => path.to_owned(),
     }
-    lines
+}
+
+type Segment = (String, Style);
+
+struct CardLine {
+    left: Vec<Segment>,
+    right: Vec<Segment>,
+    /// Tab lines in the focused card focus that tab; every other line selects
+    /// the workspace.
+    tab_id: Option<String>,
+}
+
+struct BuiltCard {
+    index: usize,
+    lines: Vec<CardLine>,
 }
 
 enum BuiltItem {
     Section(CardItem),
-    Card(usize, Vec<CardLine>),
+    Divider,
+    Card(BuiltCard),
 }
 
 impl BuiltItem {
     fn height(&self) -> u16 {
         match self {
-            Self::Section(_) => 1,
-            Self::Card(_, lines) => lines.len().clamp(1, u16::MAX as usize) as u16,
+            Self::Section(_) | Self::Divider => 1,
+            Self::Card(card) => card.lines.len().clamp(1, u16::MAX as usize) as u16,
         }
+    }
+}
+
+struct CardContext<'a> {
+    snapshot: &'a ClientShellSnapshot,
+    config: &'a ClientShellConfig,
+    clock: &'a AgentActivityClock,
+    now: SystemTime,
+    home: Option<&'a str>,
+}
+
+fn build_card(context: &CardContext<'_>, index: usize) -> Option<BuiltCard> {
+    let CardContext {
+        snapshot,
+        config,
+        clock,
+        now,
+        home,
+    } = context;
+    let palette = &config.palette;
+    let cards = &config.cards;
+    let workspace = snapshot.workspaces.get(index)?;
+    let id = workspace.workspace_id.as_str();
+    let focused = workspace.focused;
+    let agents = snapshot
+        .agents
+        .iter()
+        .filter(|agent| agent.workspace_id == id)
+        .collect::<Vec<_>>();
+    let lead = lead_agent(&agents, clock);
+
+    let bar = if focused {
+        ("▌".to_owned(), Style::default().fg(palette.accent))
+    } else {
+        (" ".to_owned(), Style::default())
+    };
+    let number = format!("{} ", workspace.number);
+    let indent = " ".repeat(1 + display_width(&number) as usize);
+    let dim = Style::default().fg(palette.overlay0);
+    let mut lines = Vec::new();
+
+    let mut right = Vec::new();
+    if let Some(lead) = lead {
+        let status = lead.agent_status;
+        right.push((
+            status_icon(status, config.status_indicators).to_owned(),
+            Style::default().fg(status_color(status, palette)),
+        ));
+        if let Some(since) = clock.since(&lead.pane_id) {
+            right.push((format!(" {}", format_age(cards, since, *now)), dim));
+        }
+    }
+    lines.push(CardLine {
+        left: vec![
+            bar.clone(),
+            (" ".to_owned(), Style::default()),
+            (number, dim),
+            (
+                workspace.label.clone(),
+                Style::default()
+                    .fg(if focused {
+                        palette.text
+                    } else {
+                        palette.subtext0
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ],
+        right,
+        tab_id: None,
+    });
+
+    let path = || {
+        let pane = snapshot
+            .panes
+            .iter()
+            .filter(|pane| pane.tab_id == workspace.active_tab_id)
+            .max_by_key(|pane| pane.focused);
+        let path = pane
+            .and_then(|pane| pane.foreground_cwd.as_deref().or(pane.cwd.as_deref()))
+            .unwrap_or(&workspace.new_workspace_cwd);
+        (display_path(path, *home), dim)
+    };
+    let mut detail = vec![bar.clone(), (indent.clone(), Style::default())];
+    let mut detail_right = Vec::new();
+    if focused {
+        // The tab lines below say what each agent is doing.
+        match workspace.branch.as_deref() {
+            Some(branch) => {
+                let mut text = format!("⎇ {branch}");
+                if let Some((ahead, behind)) = workspace.git_ahead_behind {
+                    if ahead > 0 {
+                        text.push_str(&format!(" ↑{ahead}"));
+                    }
+                    if behind > 0 {
+                        text.push_str(&format!(" ↓{behind}"));
+                    }
+                }
+                detail.push((text, Style::default().fg(palette.mauve)));
+            }
+            None => detail.push(path()),
+        }
+    } else if let Some(lead) = lead {
+        detail.push((
+            agent_name(lead).to_owned(),
+            Style::default().fg(palette.subtext0),
+        ));
+        detail.push((
+            format!(" · {}", agent_activity(cards, lead)),
+            Style::default().fg(palette.overlay1),
+        ));
+        if agents.len() > 1 {
+            detail_right.push((format!("+{}", agents.len() - 1), dim));
+        }
+    } else {
+        detail.push(path());
+    }
+    lines.push(CardLine {
+        left: detail,
+        right: detail_right,
+        tab_id: None,
+    });
+
+    if focused {
+        let tabs = snapshot
+            .tabs
+            .iter()
+            .filter(|tab| tab.workspace_id == id)
+            .collect::<Vec<_>>();
+        let label_width = tabs
+            .iter()
+            .map(|tab| display_width(&tab.label) as usize)
+            .max()
+            .unwrap_or(0)
+            .min(TAB_LABEL_MAX);
+        for (position, tab) in tabs.iter().enumerate() {
+            let branch = if position + 1 == tabs.len() {
+                "└ "
+            } else {
+                "├ "
+            };
+            let label = truncate_end(&tab.label, label_width);
+            let padding =
+                " ".repeat(label_width.saturating_sub(display_width(&label) as usize) + 2);
+            let mut left = vec![
+                bar.clone(),
+                (indent.clone(), Style::default()),
+                (branch.to_owned(), dim),
+                (
+                    format!("{label}{padding}"),
+                    if tab.focused {
+                        Style::default()
+                            .fg(palette.text)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(palette.subtext0)
+                    },
+                ),
+            ];
+            let tab_agents = agents
+                .iter()
+                .copied()
+                .filter(|agent| agent.tab_id == tab.tab_id)
+                .collect::<Vec<_>>();
+            let mut right = Vec::new();
+            if let Some(agent) = lead_agent(&tab_agents, clock) {
+                let status = agent.agent_status;
+                left.push((
+                    format!("{} ", status_icon(status, config.status_indicators)),
+                    Style::default().fg(status_color(status, palette)),
+                ));
+                left.push((
+                    agent_activity(cards, agent).to_owned(),
+                    Style::default().fg(palette.overlay1),
+                ));
+                if tab_agents.len() > 1 {
+                    right.push((format!("+{}", tab_agents.len() - 1), dim));
+                }
+            } else {
+                let panes = snapshot
+                    .panes
+                    .iter()
+                    .filter(|pane| pane.tab_id == tab.tab_id)
+                    .map(pane_label)
+                    .collect::<Vec<_>>();
+                left.push((panes.join(" · "), Style::default().fg(palette.overlay1)));
+            }
+            lines.push(CardLine {
+                left,
+                right,
+                tab_id: Some(tab.tab_id.clone()),
+            });
+        }
+    }
+    Some(BuiltCard { index, lines })
+}
+
+/// Draws left segments, shortening the last one that does not fit, and
+/// right-aligns the right segments one column in from the edge.
+fn draw_line(buffer: &mut Buffer, rect: Rect, left: &[Segment], right: &[Segment]) {
+    let right_width = right
+        .iter()
+        .map(|(text, _)| display_width(text))
+        .sum::<u16>();
+    let edge = rect.right().saturating_sub(1);
+    let right_start = edge.saturating_sub(right_width);
+    let left_limit = if right.is_empty() {
+        edge
+    } else {
+        right_start.saturating_sub(1)
+    };
+    let mut x = rect.x;
+    for (text, style) in left {
+        if x >= left_limit {
+            break;
+        }
+        let room = (left_limit - x) as usize;
+        let text = truncate_end(text, room);
+        x = put_segment(buffer, x, rect.y, left_limit, &text, *style);
+    }
+    let mut x = right_start.max(rect.x);
+    for (text, style) in right {
+        x = put_segment(buffer, x, rect.y, edge, text, *style);
     }
 }
 
@@ -467,6 +531,20 @@ fn selection_background(palette: &Palette) -> ratatui::style::Color {
     }
 }
 
+fn agent_counts(snapshot: &ClientShellSnapshot) -> [usize; 4] {
+    let mut counts = [0; 4];
+    for agent in &snapshot.agents {
+        let slot = match agent.agent_status {
+            AgentStatus::Blocked => 0,
+            AgentStatus::Done => 1,
+            AgentStatus::Working => 2,
+            AgentStatus::Idle | AgentStatus::Unknown => 3,
+        };
+        counts[slot] += 1;
+    }
+    counts
+}
+
 pub(super) fn render_cards_sidebar(
     buffer: &mut Buffer,
     area: Rect,
@@ -476,6 +554,7 @@ pub(super) fn render_cards_sidebar(
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
+    let cards = &config.cards;
     render_sidebar_background(buffer, area, palette);
     hits.sidebar_divider = if area.is_empty() {
         Rect::default()
@@ -487,49 +566,38 @@ pub(super) fn render_cards_sidebar(
     if content.is_empty() {
         return;
     }
+    let dim = Style::default().fg(palette.overlay0);
+    let filtering = !state.sidebar_filter.trim().is_empty();
 
-    let header_style = Style::default()
-        .fg(palette.overlay0)
-        .add_modifier(Modifier::BOLD);
     put_text(
         buffer,
         content.x,
         content.y,
         content.width,
-        " workspaces",
-        header_style,
+        &format!(" {}", cards.label("title", "workspaces").to_uppercase()),
+        dim.add_modifier(Modifier::BOLD),
     );
-    let group_label = config.cards.group_by.label();
-    let group_width = display_width(group_label).min(content.width.saturating_sub(1));
-    let group_rect = Rect::new(
-        content.right().saturating_sub(group_width + 1),
-        content.y,
-        group_width,
-        1,
-    );
-    put_text(
-        buffer,
-        group_rect.x,
-        group_rect.y,
-        group_rect.width,
-        group_label,
-        header_style,
-    );
-    hits.card_group_toggle = if config.mouse_capture {
-        group_rect
-    } else {
-        Rect::default()
-    };
-
-    if content.height > 1 {
-        let y = content.y + 1;
-        hits.card_filter = Rect::new(content.x, y, content.width, 1);
-        let filtering = !state.sidebar_filter.trim().is_empty();
+    if config.mouse_capture && content.width > 8 {
+        let group = Rect::new(content.right().saturating_sub(3), content.y, 2, 1);
         put_text(
             buffer,
-            content.x.saturating_add(1),
-            y,
-            content.width.saturating_sub(1),
+            group.x,
+            group.y,
+            1,
+            "≡",
+            Style::default().fg(if cards.group_by == CardsGroupBy::Project {
+                palette.accent
+            } else {
+                palette.overlay0
+            }),
+        );
+        hits.card_group_toggle = group;
+        let search = Rect::new(group.x.saturating_sub(3), content.y, 2, 1);
+        put_text(
+            buffer,
+            search.x,
+            search.y,
+            1,
             "⌕",
             Style::default().fg(if state.sidebar_filter_editing || filtering {
                 palette.accent
@@ -537,47 +605,33 @@ pub(super) fn render_cards_sidebar(
                 palette.overlay0
             }),
         );
-        let field = Rect::new(
-            content.x.saturating_add(3),
-            y,
-            content.width.saturating_sub(4),
-            1,
-        );
-        if state.sidebar_filter_editing {
-            hits.card_filter_cursor = super::text_editor::render(
-                buffer,
-                field,
-                state.sidebar_filter,
-                Style::default().fg(palette.text).bg(palette.surface0),
-            );
-        } else if filtering {
-            put_text(
-                buffer,
-                field.x,
-                y,
-                field.width,
-                state.sidebar_filter.as_str(),
-                Style::default().fg(palette.accent),
-            );
+        hits.card_filter_toggle = search;
+    }
+
+    if content.height > 1 {
+        let row = Rect::new(content.x, content.y + 1, content.width, 1);
+        if state.sidebar_filter_editing || filtering {
+            render_filter_row(buffer, row, config, state, hits);
         } else {
-            put_text(
-                buffer,
-                field.x,
-                y,
-                field.width,
-                "filter",
-                Style::default()
-                    .fg(palette.overlay0)
-                    .add_modifier(Modifier::DIM),
-            );
+            render_summary_row(buffer, row, snapshot, config, hits);
         }
+    }
+    if content.height > 2 {
+        put_text(
+            buffer,
+            content.x,
+            content.y + 2,
+            content.width,
+            &"─".repeat(content.width as usize),
+            Style::default().fg(palette.surface_dim),
+        );
     }
 
     let footer_y = content.bottom().saturating_sub(1);
     let status_line = state
         .cards_footer
         .filter(|text| !text.is_empty() && content.height > HEADER_ROWS + 3);
-    let reserved = 1 + u16::from(status_line.is_some());
+    let reserved = 1 + 2 * u16::from(status_line.is_some());
     let body = Rect::new(
         content.x,
         content.y.saturating_add(HEADER_ROWS),
@@ -586,30 +640,36 @@ pub(super) fn render_cards_sidebar(
     );
     hits.workspace_body = body;
 
+    let home = std::env::var("HOME").ok();
+    let context = CardContext {
+        snapshot,
+        config,
+        clock: state.cards_clock,
+        now: state.cards_now,
+        home: home.as_deref(),
+    };
     let view = CardsView {
-        group_by: config.cards.group_by,
+        group_by: cards.group_by,
         collapsed_groups: state.collapsed_groups,
         pinned: state.pinned_workspaces,
         filter: state.sidebar_filter.as_str(),
     };
-    let agents = cards_agents_config(&config.cards);
-    let items = card_items(snapshot, &config.cards, &view)
+    let items = card_items(snapshot, cards, &view)
         .into_iter()
-        .map(|item| match item {
-            CardItem::Card { index } => {
-                BuiltItem::Card(index, card_lines(snapshot, index, config, &agents))
-            }
-            section => BuiltItem::Section(section),
+        .filter_map(|item| match item {
+            CardItem::Card { index } => build_card(&context, index).map(BuiltItem::Card),
+            CardItem::Divider => Some(BuiltItem::Divider),
+            section => Some(BuiltItem::Section(section)),
         })
         .collect::<Vec<_>>();
     render_card_list(buffer, body, snapshot, config, state, hits, &items);
 
     if let Some(text) = status_line {
-        let y = footer_y.saturating_sub(1);
+        let rule_y = footer_y.saturating_sub(2);
         put_text(
             buffer,
             content.x,
-            y,
+            rule_y,
             content.width,
             &"─".repeat(content.width as usize),
             Style::default().fg(palette.surface_dim),
@@ -617,27 +677,28 @@ pub(super) fn render_cards_sidebar(
         put_text(
             buffer,
             content.x.saturating_add(1),
-            y,
+            footer_y.saturating_sub(1),
             content.width.saturating_sub(2),
-            &format!(" {text} "),
+            &truncate_end(text, content.width.saturating_sub(2) as usize),
             Style::default().fg(palette.subtext0),
         );
     }
 
     if config.mouse_capture {
-        hits.new_workspace = Rect::new(content.x, footer_y, 5.min(content.width), 1);
-        put_text(
-            buffer,
+        let new_label = format!(" + {}", cards.label("new", "new"));
+        hits.new_workspace = Rect::new(
             content.x,
             footer_y,
-            content.width,
-            " new",
-            Style::default().fg(palette.overlay0),
+            display_width(&new_label).min(content.width),
+            1,
         );
+        put_text(buffer, content.x, footer_y, content.width, &new_label, dim);
         // Leave the last columns to the collapse toggle.
         let menu_area = Rect::new(content.x, footer_y, content.width.saturating_sub(2), 1);
+        let menu = cards.label("menu", "menu");
         let attention = super::global_menu::global_menu_attention(snapshot);
-        let launcher_width = if attention { 8 } else { 6 }.min(menu_area.width);
+        let menu_width = display_width(menu) + if attention { 2 } else { 0 };
+        let launcher_width = (menu_width + 2).min(menu_area.width);
         hits.global_launcher = Rect::new(
             menu_area.right().saturating_sub(launcher_width),
             footer_y,
@@ -645,10 +706,9 @@ pub(super) fn render_cards_sidebar(
             1,
         );
         if attention {
-            let start_x = menu_area.right().saturating_sub(6);
             put_text(
                 buffer,
-                start_x,
+                menu_area.right().saturating_sub(menu_width),
                 footer_y,
                 2,
                 "● ",
@@ -656,23 +716,8 @@ pub(super) fn render_cards_sidebar(
                     .fg(palette.accent)
                     .add_modifier(Modifier::BOLD),
             );
-            put_text(
-                buffer,
-                start_x.saturating_add(2),
-                footer_y,
-                4,
-                "menu",
-                Style::default().fg(palette.overlay0),
-            );
-        } else {
-            put_right_text(
-                buffer,
-                menu_area,
-                footer_y,
-                "menu",
-                Style::default().fg(palette.overlay0),
-            );
         }
+        put_right_text(buffer, menu_area, footer_y, menu, dim);
     }
 
     hits.sidebar_toggle = Rect::new(
@@ -687,8 +732,106 @@ pub(super) fn render_cards_sidebar(
         hits.sidebar_toggle.y,
         hits.sidebar_toggle.width,
         "«",
-        Style::default().fg(palette.overlay0),
+        dim,
     );
+}
+
+fn render_filter_row(
+    buffer: &mut Buffer,
+    row: Rect,
+    config: &ClientShellConfig,
+    state: &mut ShellRenderState<'_>,
+    hits: &mut ShellHitMap,
+) {
+    let palette = &config.palette;
+    hits.card_filter = row;
+    put_text(
+        buffer,
+        row.x.saturating_add(1),
+        row.y,
+        1,
+        "⌕",
+        Style::default().fg(palette.accent),
+    );
+    let field = Rect::new(
+        row.x.saturating_add(3),
+        row.y,
+        row.width.saturating_sub(4),
+        1,
+    );
+    if state.sidebar_filter_editing {
+        hits.card_filter_cursor = super::text_editor::render(
+            buffer,
+            field,
+            state.sidebar_filter,
+            Style::default().fg(palette.text).bg(palette.surface0),
+        );
+    } else {
+        put_text(
+            buffer,
+            field.x,
+            row.y,
+            field.width,
+            state.sidebar_filter.as_str(),
+            Style::default().fg(palette.accent),
+        );
+    }
+}
+
+/// Agent counts by state; each count jumps to the next agent in that state.
+fn render_summary_row(
+    buffer: &mut Buffer,
+    row: Rect,
+    snapshot: &ClientShellSnapshot,
+    config: &ClientShellConfig,
+    hits: &mut ShellHitMap,
+) {
+    let palette = &config.palette;
+    let counts = agent_counts(snapshot);
+    let mut chips = SUMMARY_STATUSES
+        .iter()
+        .zip(counts)
+        .filter(|(_, count)| *count > 0)
+        .map(|(status, count)| (*status, count))
+        .collect::<Vec<_>>();
+    if chips.is_empty() && counts[3] > 0 {
+        chips.push((AgentStatus::Idle, counts[3]));
+    }
+    let chip_text = |status: AgentStatus, count: usize, words: bool| {
+        let icon = status_icon(status, config.status_indicators);
+        if words {
+            format!("{icon} {count} {}", status_word(&config.cards, status))
+        } else {
+            format!("{icon} {count}")
+        }
+    };
+    let available = row.width.saturating_sub(2);
+    let width_of = |words: bool| {
+        chips
+            .iter()
+            .map(|(status, count)| display_width(&chip_text(*status, *count, words)))
+            .sum::<u16>()
+            + 2 * chips.len().saturating_sub(1) as u16
+    };
+    let words = width_of(true) <= available;
+    let mut x = row.x.saturating_add(1);
+    for (status, count) in chips {
+        let text = chip_text(status, count, words);
+        let start = x;
+        x = put_segment(
+            buffer,
+            x,
+            row.y,
+            row.right(),
+            &text,
+            Style::default().fg(status_color(status, palette)),
+        );
+        if config.mouse_capture && status != AgentStatus::Idle {
+            hits.card_status
+                .push((Rect::new(start, row.y, x - start, 1), status));
+        }
+        x = x.saturating_add(2);
+    }
 }
 
 fn render_card_list(
@@ -706,16 +849,17 @@ fn render_card_list(
     }
     if items.is_empty() {
         *state.workspace_scroll = 0;
+        let message = if state.sidebar_filter.trim().is_empty() {
+            config.cards.label("empty", "no workspaces")
+        } else {
+            config.cards.label("no_matches", "no matches")
+        };
         put_text(
             buffer,
             body.x,
             body.y,
             body.width,
-            if state.sidebar_filter.trim().is_empty() {
-                " no workspaces"
-            } else {
-                " no matches"
-            },
+            &format!(" {message}"),
             Style::default()
                 .fg(palette.overlay0)
                 .add_modifier(Modifier::DIM),
@@ -728,8 +872,7 @@ fn render_card_list(
         .iter()
         .enumerate()
         .map(|(position, item)| match (item, items.get(position + 1)) {
-            (BuiltItem::Card(..), Some(BuiltItem::Card(..))) => config.cards.card_gap,
-            (BuiltItem::Card(..), Some(BuiltItem::Section(_))) => config.cards.card_gap.max(1),
+            (BuiltItem::Card(_), Some(BuiltItem::Card(_))) => config.cards.card_gap,
             _ => 0,
         })
         .collect::<Vec<_>>();
@@ -737,7 +880,7 @@ fn render_card_list(
         super::scroll::list_scroll_metrics(&heights, &gaps, body.height, *state.workspace_scroll);
     if std::mem::take(state.reveal_focused_workspace) {
         if let Some(target) = items.iter().position(
-            |item| matches!(item, BuiltItem::Card(index, _) if snapshot.workspaces[*index].focused),
+            |item| matches!(item, BuiltItem::Card(card) if snapshot.workspaces[card.index].focused),
         ) {
             *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
                 &heights,
@@ -774,19 +917,14 @@ fn render_card_list(
             BuiltItem::Section(CardItem::Section {
                 key,
                 label,
-                status,
                 count,
                 collapsed,
             }) => {
-                render_section(
-                    buffer, rect, label, *status, *count, *collapsed, config, palette,
-                );
+                render_section(buffer, rect, label, *count, *collapsed, palette);
                 hits.card_sections.push((rect, key.clone()));
             }
-            BuiltItem::Section(CardItem::Card { .. }) => {}
-            BuiltItem::Card(index, lines) => {
-                render_card(buffer, rect, snapshot, *index, lines, config, state, hits);
-            }
+            BuiltItem::Section(_) | BuiltItem::Divider => {}
+            BuiltItem::Card(card) => render_card(buffer, rect, snapshot, card, config, state, hits),
         }
         y = y.saturating_add(heights[position] + gaps[position]);
     }
@@ -796,193 +934,70 @@ fn render_card_list(
         hits.workspace_scrollbar = track;
         super::scroll::render_list_scrollbar(buffer, track, metrics, palette);
     }
+
+    if let Some(row) = state
+        .workspace_drop_indicator_row
+        .filter(|row| *row >= body.y.saturating_sub(1) && *row < body.bottom())
+    {
+        put_text(
+            buffer,
+            body.x,
+            row,
+            width,
+            &"─".repeat(width as usize),
+            Style::default().fg(palette.accent),
+        );
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_section(
     buffer: &mut Buffer,
     rect: Rect,
     label: &str,
-    status: Option<AgentStatus>,
     count: usize,
     collapsed: bool,
-    config: &ClientShellConfig,
     palette: &Palette,
 ) {
-    let mut x = rect.x.saturating_add(1);
-    x = put_segment(
+    let x = put_segment(
         buffer,
-        x,
+        rect.x.saturating_add(1),
         rect.y,
         rect.right(),
         if collapsed { "▸ " } else { "▾ " },
         Style::default().fg(palette.overlay0),
     );
-    let color = status.map_or(palette.overlay1, |status| status_color(status, palette));
-    if let Some(status) = status {
-        x = put_segment(
-            buffer,
-            x,
-            rect.y,
-            rect.right(),
-            &format!("{} ", status_icon(status, config.status_indicators)),
-            Style::default().fg(color),
-        );
-    }
-    x = put_segment(
+    draw_line(
         buffer,
-        x,
-        rect.y,
-        rect.right(),
-        &label.to_uppercase(),
-        Style::default().fg(color).add_modifier(Modifier::BOLD),
-    );
-    put_segment(
-        buffer,
-        x,
-        rect.y,
-        rect.right(),
-        &format!(" · {count}"),
-        Style::default().fg(palette.overlay0),
+        Rect::new(x, rect.y, rect.right().saturating_sub(x), 1),
+        &[(
+            label.to_owned(),
+            Style::default()
+                .fg(palette.overlay1)
+                .add_modifier(Modifier::BOLD),
+        )],
+        &[(count.to_string(), Style::default().fg(palette.overlay0))],
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_card(
     buffer: &mut Buffer,
     rect: Rect,
     snapshot: &ClientShellSnapshot,
-    index: usize,
-    lines: &[CardLine],
+    card: &BuiltCard,
     config: &ClientShellConfig,
     state: &ShellRenderState<'_>,
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
-    let Some(workspace) = snapshot.workspaces.get(index) else {
+    let Some(workspace) = snapshot.workspaces.get(card.index) else {
         return;
     };
-    let status = workspace.agent_status;
-    let focused = workspace.focused;
     let selected = state
         .selected_workspace_id
         .is_some_and(|target| target.matches(state.active_endpoint_id, &workspace.workspace_id));
-    let bar_color = match status {
-        AgentStatus::Blocked | AgentStatus::Working | AgentStatus::Done => {
-            status_color(status, palette)
-        }
-        AgentStatus::Idle | AgentStatus::Unknown if focused => palette.accent,
-        AgentStatus::Idle | AgentStatus::Unknown => palette.surface1,
-    };
-    let guide = Style::default().fg(palette.overlay0);
-    let mut workspace_rows = 0u16;
-    for (line_index, line) in lines.iter().take(rect.height as usize).enumerate() {
-        let y = rect.y + line_index as u16;
-        let line_rect = Rect::new(rect.x, y, rect.width, 1);
-        put_text(buffer, rect.x, y, 1, "▎", Style::default().fg(bar_color));
-        let x = put_segment(
-            buffer,
-            rect.x.saturating_add(1),
-            y,
-            rect.right(),
-            &line.prefix,
-            guide,
-        );
-        let available = rect.right().saturating_sub(x).saturating_sub(1) as usize;
-        let spans: Vec<Span<'static>> = match &line.body {
-            LineBody::Space(tokens) => crate::ui::resolved_token_spans(
-                tokens,
-                (
-                    status_icon(status, config.status_indicators),
-                    Style::default().fg(status_color(status, palette)),
-                ),
-                Style::default().fg(status_color(status, palette)),
-                Style::default()
-                    .fg(if focused {
-                        palette.text
-                    } else {
-                        palette.subtext0
-                    })
-                    .add_modifier(Modifier::BOLD),
-                Style::default().fg(if focused {
-                    palette.mauve
-                } else {
-                    palette.overlay0
-                }),
-                Style::default().fg(palette.overlay1),
-                palette,
-                available,
-            ),
-            LineBody::Agent {
-                tokens,
-                status,
-                focused,
-            } => crate::ui::resolved_token_spans(
-                tokens,
-                (
-                    status_icon(*status, config.status_indicators),
-                    Style::default().fg(status_color(*status, palette)),
-                ),
-                Style::default().fg(status_color(*status, palette)),
-                Style::default().fg(if *focused {
-                    palette.text
-                } else {
-                    palette.subtext0
-                }),
-                Style::default().fg(palette.overlay0),
-                Style::default().fg(palette.overlay0),
-                palette,
-                available,
-            ),
-            LineBody::Tab {
-                label,
-                focused: tab_focused,
-            } => vec![Span::styled(
-                label.clone(),
-                if *tab_focused && focused {
-                    Style::default()
-                        .fg(palette.text)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(palette.subtext0)
-                },
-            )],
-            LineBody::Pane {
-                label,
-                focused: pane_focused,
-            } => vec![
-                Span::styled("› ", guide),
-                Span::styled(
-                    label.clone(),
-                    Style::default().fg(if *pane_focused {
-                        palette.text
-                    } else {
-                        palette.overlay1
-                    }),
-                ),
-            ],
-        };
-        Paragraph::new(Line::from(spans))
-            .render(Rect::new(x, y, rect.right().saturating_sub(x), 1), buffer);
-        match &line.target {
-            LineTarget::Workspace => workspace_rows += 1,
-            LineTarget::Tab(tab_id) => hits.card_tabs.push((line_rect, tab_id.clone())),
-            LineTarget::Pane(pane_id) => hits.agents.push((line_rect, pane_id.clone())),
-        }
-    }
-    if workspace_rows > 0 {
-        hits.workspaces.push(WorkspaceHit {
-            rect: Rect::new(rect.x, rect.y, rect.width, workspace_rows),
-            endpoint_id: ClientEndpointId::Local,
-            workspace_id: workspace.workspace_id.clone(),
-            indented: false,
-            group_toggle: None,
-        });
-    }
-
     let background = if selected {
         Some(selection_background(palette))
-    } else if focused {
+    } else if workspace.focused {
         Some(super::sidebar::workspace_active_background(
             palette,
             state.selected_workspace_id.is_some(),
@@ -997,6 +1012,21 @@ fn render_card(
             }
         }
     }
+    for (offset, line) in card.lines.iter().take(rect.height as usize).enumerate() {
+        let line_rect = Rect::new(rect.x, rect.y + offset as u16, rect.width, 1);
+        draw_line(buffer, line_rect, &line.left, &line.right);
+        if let Some(tab_id) = &line.tab_id {
+            hits.card_tabs.push((line_rect, tab_id.clone()));
+        }
+    }
+    // The whole card selects its workspace; tab lines are checked first.
+    hits.workspaces.push(WorkspaceHit {
+        rect,
+        endpoint_id: ClientEndpointId::Local,
+        workspace_id: workspace.workspace_id.clone(),
+        indented: false,
+        group_toggle: None,
+    });
 }
 
 impl ClientShellState {
@@ -1044,6 +1074,60 @@ impl ClientShellState {
         if let Some(target) = target {
             self.workspace_scroll = target.min(self.hits.workspace_max_scroll);
         }
+    }
+
+    /// Cards follow the workspace order, so dragging one reorders workspaces.
+    /// Pinned cards, repository sections and a filtered list have their own
+    /// order, so dragging is off there.
+    pub(super) fn card_is_draggable(&self, workspace_id: &str) -> bool {
+        self.config.cards.group_by == CardsGroupBy::None
+            && self.sidebar_filter.trim().is_empty()
+            && !self.pinned_workspaces.iter().any(|id| id == workspace_id)
+    }
+
+    /// Drop slots sit on the row above each unpinned top-level card, plus one
+    /// below the last card when the list is not scrolled past it.
+    pub(super) fn card_drop_target_at(&self, point: (u16, u16)) -> Option<(Option<String>, u16)> {
+        let body = self.hits.workspace_body;
+        if body.height == 0 || point.1 < body.y.saturating_sub(1) || point.1 >= body.bottom() {
+            return None;
+        }
+        let snapshot = self.snapshot.as_deref()?;
+        let is_root = |workspace_id: &str| {
+            snapshot
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_id == workspace_id)
+                .is_some_and(|workspace| {
+                    !workspace
+                        .worktree
+                        .as_ref()
+                        .is_some_and(|worktree| worktree.is_linked_worktree)
+                })
+        };
+        let unpinned = self
+            .hits
+            .workspaces
+            .iter()
+            .filter(|hit| !self.pinned_workspaces.contains(&hit.workspace_id))
+            .collect::<Vec<_>>();
+        let mut slots = unpinned
+            .iter()
+            .filter(|hit| is_root(&hit.workspace_id))
+            .map(|hit| (Some(hit.workspace_id.clone()), hit.rect.y.saturating_sub(1)))
+            .collect::<Vec<_>>();
+        let last = unpinned.last()?;
+        let last_in_order = card_workspace_order(snapshot, &self.config.cards, &self.cards_view())
+            .last()
+            .map(|index| snapshot.workspaces[*index].workspace_id.as_str());
+        if last_in_order == Some(last.workspace_id.as_str()) && last.rect.bottom() < body.bottom() {
+            slots.push((None, last.rect.bottom()));
+        }
+        slots
+            .into_iter()
+            .enumerate()
+            .min_by_key(|(index, (_, row))| (point.1.abs_diff(*row), *index))
+            .map(|(_, target)| target)
     }
 
     pub(super) fn toggle_pinned_workspace(&mut self, workspace_id: String) {
@@ -1110,8 +1194,27 @@ impl ClientShellState {
         }
     }
 
-    /// Clicks on the card sidebar's own controls: grouping, filter, section
-    /// headers and tab lines. Workspace and pane lines use the shared hits.
+    /// The next agent in `status` after the focused one, in card order.
+    pub(super) fn next_card_agent(&self, status: AgentStatus) -> Option<String> {
+        let snapshot = self.snapshot.as_deref()?;
+        let order = card_workspace_order(snapshot, &self.config.cards, &self.cards_view());
+        let candidates = order
+            .iter()
+            .flat_map(|index| {
+                let workspace_id = &snapshot.workspaces[*index].workspace_id;
+                snapshot.agents.iter().filter(move |agent| {
+                    agent.workspace_id == *workspace_id && agent.agent_status == status
+                })
+            })
+            .collect::<Vec<_>>();
+        let current = candidates.iter().position(|agent| agent.focused);
+        let next = current.map_or(0, |position| (position + 1) % candidates.len().max(1));
+        candidates.get(next).map(|agent| agent.pane_id.clone())
+    }
+
+    /// Clicks on the card sidebar's own controls: grouping, filter, summary,
+    /// section headers and tab lines. Cards themselves use the shared
+    /// workspace hits.
     pub(super) fn handle_card_sidebar_click(
         &mut self,
         point: (u16, u16),
@@ -1126,9 +1229,28 @@ impl ClientShellState {
             outcome.repaint = true;
             return true;
         }
-        if super::contains(self.hits.card_filter, point) {
+        if super::contains(self.hits.card_filter_toggle, point)
+            || super::contains(self.hits.card_filter, point)
+        {
             self.begin_sidebar_filter();
             outcome.repaint = true;
+            return true;
+        }
+        if let Some(status) = self
+            .hits
+            .card_status
+            .iter()
+            .find(|(rect, _)| super::contains(*rect, point))
+            .map(|(_, status)| *status)
+        {
+            if let Some(pane_id) = self.next_card_agent(status) {
+                self.push_endpoint_method(
+                    crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+                        pane_id,
+                    }),
+                    outcome,
+                );
+            }
             return true;
         }
         if let Some(key) = self
@@ -1143,13 +1265,7 @@ impl ClientShellState {
             outcome.repaint = true;
             return true;
         }
-        if let Some(tab_id) = self
-            .hits
-            .card_tabs
-            .iter()
-            .find(|(rect, _)| super::contains(*rect, point))
-            .map(|(_, tab_id)| tab_id.clone())
-        {
+        if let Some(tab_id) = self.card_tab_at(point) {
             self.push_endpoint_method(
                 crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget { tab_id }),
                 outcome,
@@ -1159,150 +1275,35 @@ impl ClientShellState {
         false
     }
 
+    pub(super) fn card_tab_at(&self, point: (u16, u16)) -> Option<String> {
+        self.hits
+            .card_tabs
+            .iter()
+            .find(|(rect, _)| super::contains(*rect, point))
+            .map(|(_, tab_id)| tab_id.clone())
+    }
+
+    /// Runs the footer command, redraws card ages once a minute and saves
+    /// agent state stamps when they are due.
     pub(crate) fn tick_cards_footer(&mut self, now: std::time::Instant) -> bool {
-        self.cards_footer.tick(
+        let cards = self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Cards;
+        let mut changed = self.cards_footer.tick(
             now,
-            self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Cards,
+            cards,
             &self.config.cards.footer_command,
             self.config.cards.footer_interval_seconds,
-        )
-    }
-}
-
-/// Runs `[ui.sidebar.cards].footer_command` off the input thread and keeps its
-/// latest first line for the sidebar's status row.
-#[derive(Default)]
-pub(crate) struct CardsFooterRuntime {
-    command: String,
-    text: Option<String>,
-    next_run_at: Option<std::time::Instant>,
-    pending: Option<std::sync::mpsc::Receiver<Option<String>>>,
-}
-
-const FOOTER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const FOOTER_MAX_CHARS: usize = 120;
-
-impl CardsFooterRuntime {
-    pub(super) fn text(&self) -> Option<&str> {
-        self.text.as_deref()
-    }
-
-    /// Collects a finished run and starts the next one when due. Returns
-    /// whether the visible text changed.
-    pub(super) fn tick(
-        &mut self,
-        now: std::time::Instant,
-        enabled: bool,
-        command: &str,
-        interval_seconds: u64,
-    ) -> bool {
-        let command = command.trim();
-        if !enabled || command.is_empty() {
-            self.pending = None;
-            self.next_run_at = None;
-            self.command.clear();
-            return self.text.take().is_some();
-        }
-        let mut changed = false;
-        if self.command != command {
-            self.command = command.to_owned();
-            self.pending = None;
-            self.next_run_at = None;
-            changed |= self.text.take().is_some();
-        }
-        if let Some(receiver) = &self.pending {
-            match receiver.try_recv() {
-                Ok(output) => {
-                    self.pending = None;
-                    changed |= self.text != output;
-                    self.text = output;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.pending = None,
+        );
+        if cards {
+            changed |=
+                self.cards_clock.minute_changed(SystemTime::now()) && self.cards_layout_active();
+            if self.cards_clock.take_due_persist(now) {
+                let mut outcome = ClientShellInput::default();
+                self.persist_chrome_preferences(&mut outcome);
+                changed |= outcome.repaint;
             }
-        }
-        if self.pending.is_none() && self.next_run_at.is_none_or(|deadline| now >= deadline) {
-            let interval = std::time::Duration::from_secs(interval_seconds.clamp(1, 3600));
-            self.next_run_at = Some(now + interval);
-            self.pending = spawn_footer_command(self.command.clone());
         }
         changed
     }
-}
-
-#[cfg(unix)]
-fn spawn_footer_command(command: String) -> Option<std::sync::mpsc::Receiver<Option<String>>> {
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
-        .name("herdr-cards-footer".to_owned())
-        .spawn(move || {
-            let _ = sender.send(run_footer_command(&command));
-        })
-        .ok()?;
-    Some(receiver)
-}
-
-#[cfg(not(unix))]
-fn spawn_footer_command(_command: String) -> Option<std::sync::mpsc::Receiver<Option<String>>> {
-    None
-}
-
-#[cfg(unix)]
-fn run_footer_command(command: &str) -> Option<String> {
-    use std::io::Read as _;
-    use std::process::{Command, Stdio};
-
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let started = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() < FOOTER_TIMEOUT => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
-    let mut output = String::new();
-    child.stdout.take()?.read_to_string(&mut output).ok()?;
-    footer_line(&output)
-}
-
-/// First non-empty output line with terminal escapes and control characters
-/// removed, so a script written for a colored prompt still renders cleanly.
-fn footer_line(output: &str) -> Option<String> {
-    let line = output.lines().find(|line| !line.trim().is_empty())?;
-    let mut clean = String::new();
-    let mut chars = line.chars().peekable();
-    while let Some(character) = chars.next() {
-        if character == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for next in chars.by_ref() {
-                    if ('@'..='~').contains(&next) {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        if !character.is_control() {
-            clean.push(character);
-        }
-    }
-    let clean = clean.trim();
-    (!clean.is_empty()).then(|| clean.chars().take(FOOTER_MAX_CHARS).collect())
 }
 
 #[cfg(test)]
@@ -1310,17 +1311,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn footer_line_strips_escapes_and_keeps_the_first_line() {
-        assert_eq!(
-            footer_line("\n\u{1b}[32m5h 80%\u{1b}[0m · 7d 91%\nsecond\n").as_deref(),
-            Some("5h 80% · 7d 91%")
-        );
-        assert_eq!(footer_line("  \n\t\n"), None);
-    }
-
-    #[test]
     fn basename_ignores_trailing_slashes() {
         assert_eq!(basename("/home/me/project/"), Some("project"));
         assert_eq!(basename("/"), None);
+    }
+
+    #[test]
+    fn paths_under_home_use_a_tilde() {
+        assert_eq!(display_path("/home/me/notes", Some("/home/me")), "~/notes");
+        assert_eq!(display_path("/home/me", Some("/home/me")), "~");
+        assert_eq!(display_path("/home/meow", Some("/home/me")), "/home/meow");
+        assert_eq!(display_path("/srv", None), "/srv");
     }
 }

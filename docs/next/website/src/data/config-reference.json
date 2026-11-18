@@ -1094,7 +1094,7 @@
           "key": "ui.sidebar.layout",
           "type": "enum",
           "default": "\"panels\"",
-          "description": "Expanded desktop sidebar layout. panels shows Spaces above Agents with a draggable divider. cards shows one list of workspace cards, each with its tabs and panes nested as a tree and agents inline, sorted into collapsible sections with a filter field on top. The collapsed rail, mobile layout and multi-machine sidebar are unchanged.",
+          "description": "Expanded desktop sidebar layout. panels shows Spaces above Agents with a draggable divider. cards shows one stable list of compact workspace cards: each card shows its lead agent's state, what that agent is doing and for how long, and the focused card unfolds into its tabs. A summary row counts agents by state, and the order never changes when an agent changes state. The collapsed rail, mobile layout and multi-machine sidebar are unchanged.",
           "values": [
             "panels",
             "cards"
@@ -1103,31 +1103,24 @@
         {
           "key": "ui.sidebar.cards.group_by",
           "type": "enum",
-          "default": "\"status\"",
-          "description": "Initial card sections. status groups by needs input, done, working and idle; project groups by repository; none keeps one flat list. Pinned cards always come first. Clicking the label in the sidebar header cycles it and the choice is remembered.",
+          "default": "\"none\"",
+          "description": "Initial card grouping. none keeps one list in workspace order; project adds a collapsible section per repository. Pinned cards always come first. The ≡ button in the sidebar header toggles it and the choice is remembered.",
           "values": [
-            "status",
-            "project",
-            "none"
+            "none",
+            "project"
           ]
-        },
-        {
-          "key": "ui.sidebar.cards.agent_rows",
-          "type": "list of token rows",
-          "default": "[[\"state_icon\", \"agent\", \"state_text\"], [\"terminal_title_stripped\"]]",
-          "description": "Rows drawn for each agent inside its workspace card, using the same tokens and inline styles as ui.sidebar.agents.rows. Workspace lines use ui.sidebar.spaces.rows."
         },
         {
           "key": "ui.sidebar.cards.card_gap",
           "type": "integer",
-          "default": "1",
-          "description": "Blank terminal rows between cards. Sections are always separated by at least one row."
+          "default": "0",
+          "description": "Blank terminal rows between cards."
         },
         {
-          "key": "ui.sidebar.cards.section_labels",
+          "key": "ui.sidebar.cards.labels",
           "type": "table of strings",
           "default": "{}",
-          "description": "Section title overrides keyed by pinned, blocked, done, working, idle, no_repo and rest, for example { blocked = \"waiting\" }."
+          "description": "Text overrides for the card sidebar, keyed by title, blocked, done, working, idle, no_repo, new, menu, empty, no_matches, now, minutes, hours and days, for example { blocked = \"ждёт\", minutes = \"м\" }. Blank values keep the default."
         },
         {
           "key": "ui.sidebar.cards.footer_command",

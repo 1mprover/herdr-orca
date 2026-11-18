@@ -251,17 +251,6 @@ pub(super) fn agent_row(
     config: &ClientShellConfig,
     machine: Option<&str>,
 ) -> Option<AgentRow> {
-    agent_row_with(snapshot, pane_id, &config.agents, machine)
-}
-
-/// Builds an agent row from an explicit row layout, so the card sidebar can
-/// use its own tokens while sharing the label and state-text rules.
-pub(super) fn agent_row_with(
-    snapshot: &ClientShellSnapshot,
-    pane_id: &str,
-    agents: &crate::config::AgentsSidebarConfig,
-    machine: Option<&str>,
-) -> Option<AgentRow> {
     let agent = snapshot
         .agents
         .iter()
@@ -304,7 +293,7 @@ pub(super) fn agent_row_with(
         .as_deref()
         .and_then(crate::detect::parse_agent_label);
     let rows = crate::ui::sidebar_agent_rows(
-        agents,
+        &config.agents,
         crate::ui::AgentTokenContext {
             machine,
             workspace: &workspace.label,

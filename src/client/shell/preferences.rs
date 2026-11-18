@@ -28,11 +28,38 @@ pub(super) struct ClientChromePreferences {
     pub(super) collapsed_groups: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) remote_collapsed_groups: Vec<ClientRemoteCollapsedGroups>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_lenient"
+    )]
     pub(super) cards_group_by: Option<crate::config::CardsGroupBy>,
     /// Workspace ids pinned to the top of the card sidebar, in pin order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) pinned_workspaces: Vec<String>,
+    /// When each agent entered its current state, so card ages survive a
+    /// reattach.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) agent_state_since: Vec<AgentStateSince>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub(super) struct AgentStateSince {
+    pub(super) boot_id: String,
+    pub(super) pane_id: String,
+    pub(super) seq: u64,
+    pub(super) unix_ms: u64,
+}
+
+/// A value this build no longer understands reads as unset instead of
+/// discarding every other saved preference.
+fn deserialize_lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 pub(super) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {

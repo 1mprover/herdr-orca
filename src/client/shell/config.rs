@@ -65,6 +65,7 @@ impl ClientShellState {
                 .cards_group_by_manual
                 .then_some(self.config.cards.group_by),
             pinned_workspaces: self.pinned_workspaces.clone(),
+            agent_state_since: self.cards_clock.persisted(),
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.set_endpoint_error(error);

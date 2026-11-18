@@ -252,6 +252,9 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) sidebar_filter: &'a TextEditor,
     pub(super) sidebar_filter_editing: bool,
     pub(super) cards_footer: Option<&'a str>,
+    pub(super) cards_clock: &'a super::cards_activity::AgentActivityClock,
+    /// Wall-clock time for card ages, taken once per frame.
+    pub(super) cards_now: std::time::SystemTime,
 }
 
 /// The expanded single-endpoint sidebar, in whichever layout is configured.
@@ -351,6 +354,8 @@ pub(super) fn render_shell(
         hits.card_sections.clear();
         hits.card_tabs.clear();
         hits.card_filter = Rect::default();
+        hits.card_filter_toggle = Rect::default();
+        hits.card_status.clear();
         hits.new_workspace = Rect::default();
         hits.machines.clear();
         hits.workspaces.clear();

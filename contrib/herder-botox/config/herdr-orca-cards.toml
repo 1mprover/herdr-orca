@@ -7,18 +7,24 @@
 layout = "cards"
 
 [ui.sidebar.cards]
-group_by = "status"
-card_gap = 1
-agent_rows = [["state_icon", "agent", "state_text"], ["terminal_title_stripped"]]
+group_by = "none"
+card_gap = 0
 # Остаток лимитов подписки внизу панели (тот же скрипт, что в tab_bar_right).
 footer_command = "$HOME/herder-botox/bin/herdr-limits.sh"
 footer_interval_seconds = 30
 
-[ui.sidebar.cards.section_labels]
-pinned = "закреплённые"
-blocked = "ждёт ответа"
+[ui.sidebar.cards.labels]
+title = "пространства"
+blocked = "ждёт"
 done = "готово"
 working = "работает"
 idle = "простаивает"
 no_repo = "без репозитория"
-rest = "остальные"
+new = "новое"
+menu = "меню"
+empty = "нет пространств"
+no_matches = "ничего не найдено"
+now = "сейчас"
+minutes = "м"
+hours = "ч"
+days = "д"

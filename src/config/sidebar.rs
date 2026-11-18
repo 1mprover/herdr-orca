@@ -482,38 +482,28 @@ pub enum SidebarLayoutConfig {
     /// Spaces on top, Agents below, split by a draggable divider.
     #[default]
     Panels,
-    /// One list of workspace cards with their agents nested inside, grouped
-    /// into collapsible sections.
+    /// One list of compact workspace cards; the focused card unfolds into
+    /// its tabs.
     Cards,
 }
 
-/// Which sections the card layout sorts workspaces into.
+/// How the card layout arranges workspaces. Either way the order is stable:
+/// a card never moves because an agent changed state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CardsGroupBy {
-    /// Needs input, done, working, idle.
+    /// One list in workspace order.
     #[default]
-    Status,
-    /// One section per repository.
-    Project,
-    /// A flat list in workspace order.
     None,
+    /// One collapsible section per repository.
+    Project,
 }
 
 impl CardsGroupBy {
     pub(crate) fn next(self) -> Self {
         match self {
-            Self::Status => Self::Project,
+            Self::None => Self::Project,
             Self::Project => Self::None,
-            Self::None => Self::Status,
-        }
-    }
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Status => "status",
-            Self::Project => "project",
-            Self::None => "flat",
         }
     }
 }
@@ -522,15 +512,12 @@ impl CardsGroupBy {
 #[serde(default)]
 pub struct CardsSidebarConfig {
     pub group_by: CardsGroupBy,
-    /// Rows drawn for each agent inside its workspace card. The workspace
-    /// lines themselves come from `[ui.sidebar.spaces].rows`.
-    #[serde(deserialize_with = "deserialize_sidebar_rows")]
-    pub agent_rows: AgentSidebarRows,
     /// Blank rows between cards.
     pub card_gap: u16,
-    /// Overrides for section titles, keyed by `pinned`, `blocked`, `done`,
-    /// `working`, `idle` and `no_repo`.
-    pub section_labels: std::collections::BTreeMap<String, String>,
+    /// Overrides for the sidebar's words, keyed by `title`, `filter`,
+    /// `blocked`, `done`, `working`, `idle`, `no_repo`, `new`, `menu`, `now`,
+    /// `minutes`, `hours` and `days`.
+    pub labels: std::collections::BTreeMap<String, String>,
     /// Shell command whose first output line is shown at the bottom of the
     /// card sidebar, e.g. remaining subscription limits. Empty disables it.
     pub footer_command: String,
@@ -540,20 +527,23 @@ pub struct CardsSidebarConfig {
 impl Default for CardsSidebarConfig {
     fn default() -> Self {
         Self {
-            group_by: CardsGroupBy::Status,
-            agent_rows: vec![
-                vec![
-                    AgentSidebarToken::StateIcon,
-                    AgentSidebarToken::Agent,
-                    AgentSidebarToken::StateText,
-                ],
-                vec![AgentSidebarToken::TerminalTitleStripped],
-            ],
-            card_gap: 1,
-            section_labels: Default::default(),
+            group_by: CardsGroupBy::None,
+            card_gap: 0,
+            labels: Default::default(),
             footer_command: String::new(),
             footer_interval_seconds: 30,
         }
+    }
+}
+
+impl CardsSidebarConfig {
+    /// The configured word for `key`, or `fallback` when it is unset or blank.
+    pub(crate) fn label<'a>(&'a self, key: &str, fallback: &'a str) -> &'a str {
+        self.labels
+            .get(key)
+            .map(|label| label.trim())
+            .filter(|label| !label.is_empty())
+            .unwrap_or(fallback)
     }
 }
 
@@ -596,7 +586,8 @@ mod tests {
         );
         assert_eq!(config.spaces.row_gap, 0);
         assert_eq!(config.layout, SidebarLayoutConfig::Panels);
-        assert_eq!(config.cards.group_by, CardsGroupBy::Status);
+        assert_eq!(config.cards.group_by, CardsGroupBy::None);
+        assert_eq!(config.cards.card_gap, 0);
     }
 
     #[test]
@@ -608,9 +599,8 @@ layout = "cards"
 
 [ui.sidebar.cards]
 group_by = "project"
-card_gap = 0
-agent_rows = [["state_icon", "agent", "$ctx"]]
-section_labels = { blocked = "ждёт ответа" }
+card_gap = 1
+labels = { blocked = "ждёт", title = "  " }
 footer_command = "echo 5h 80%"
 footer_interval_seconds = 10
 "#,
@@ -619,31 +609,16 @@ footer_interval_seconds = 10
         let sidebar = &config.ui.sidebar;
         assert_eq!(sidebar.layout, SidebarLayoutConfig::Cards);
         assert_eq!(sidebar.cards.group_by, CardsGroupBy::Project);
-        assert_eq!(sidebar.cards.card_gap, 0);
-        assert_eq!(
-            sidebar.cards.agent_rows,
-            vec![vec![
-                AgentSidebarToken::StateIcon,
-                AgentSidebarToken::Agent,
-                AgentSidebarToken::Custom("ctx".into()),
-            ]]
-        );
-        assert_eq!(
-            sidebar
-                .cards
-                .section_labels
-                .get("blocked")
-                .map(String::as_str),
-            Some("ждёт ответа")
-        );
+        assert_eq!(sidebar.cards.card_gap, 1);
+        assert_eq!(sidebar.cards.label("blocked", "waiting"), "ждёт");
+        // Blank labels fall back to the default word.
+        assert_eq!(sidebar.cards.label("title", "workspaces"), "workspaces");
+        assert_eq!(sidebar.cards.label("done", "done"), "done");
         assert_eq!(sidebar.cards.footer_command, "echo 5h 80%");
         assert_eq!(sidebar.cards.footer_interval_seconds, 10);
         assert!(toml::from_str::<SidebarConfig>("layout = \"grid\"").is_err());
-        assert!(toml::from_str::<SidebarConfig>("[cards]\ngroup_by = \"repo\"").is_err());
-        assert_eq!(
-            CardsGroupBy::Status.next().next().next(),
-            CardsGroupBy::Status
-        );
+        assert!(toml::from_str::<SidebarConfig>("[cards]\ngroup_by = \"status\"").is_err());
+        assert_eq!(CardsGroupBy::None.next().next(), CardsGroupBy::None);
     }
 
     #[test]
