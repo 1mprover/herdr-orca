@@ -690,3 +690,61 @@ fn long_titles_truncate_before_the_age() {
     assert!(rows[bitrix + 2].contains('…'), "{rows:#?}");
     assert!(rows[bitrix + 2].ends_with("5m"), "{rows:#?}");
 }
+
+#[test]
+fn the_counter_row_collapses_sessions_and_it_sticks() {
+    let mut state = cards_state();
+    state.collapsed_groups.insert("cards:sessions:gone".into());
+    sidebar_rows(&mut state);
+    let (toggle, workspace_id) = state.hits.card_session_toggles[0].clone();
+    assert_eq!(workspace_id, "ws_1");
+    let mut outcome = ClientShellInput::default();
+    assert!(state.handle_card_sidebar_click((toggle.x + 6, toggle.y), &mut outcome));
+    assert!(outcome.repaint);
+    assert!(state.collapsed_groups.contains("cards:sessions:ws_1"));
+    // Keys of closed workspaces are dropped.
+    assert!(!state.collapsed_groups.contains("cards:sessions:gone"));
+    let rows = sidebar_rows(&mut state);
+    let orca = row_of(&rows, "herdr-orca");
+    assert!(
+        rows[orca + 2].contains("▸ 1 agent · 2 terminals"),
+        "{rows:#?}"
+    );
+    assert!(rows[orca + 3].contains('╰'), "{rows:#?}");
+    assert!(state
+        .hits
+        .card_sessions
+        .iter()
+        .all(|(_, pane)| pane != "pane_1"));
+
+    // The card stays folded while another card is focused: name and path only.
+    let mut snapshot = fleet();
+    snapshot.workspaces[0].focused = false;
+    snapshot.workspaces[1].focused = true;
+    snapshot.focused_workspace_id = Some("ws_2".into());
+    snapshot.focused_pane_id = Some("pane_4".into());
+    state.set_snapshot(Box::new(snapshot));
+    let rows = sidebar_rows(&mut state);
+    assert_eq!(workspace_hit(&state, "ws_1").height, 2, "{rows:#?}");
+
+    // A filter shows the sessions anyway, including terminals found by the
+    // folder name their row shows.
+    state.sidebar_filter = TextEditor::from("pane");
+    let rows = sidebar_rows(&mut state);
+    let orca = row_of(&rows, "herdr-orca");
+    assert!(rows[orca + 3].contains("$ build · pane_2"), "{rows:#?}");
+
+    // Clicking the counter again unfolds it.
+    state.sidebar_filter = TextEditor::from("");
+    state.set_snapshot(Box::new(fleet()));
+    sidebar_rows(&mut state);
+    let (toggle, _) = state.hits.card_session_toggles[0].clone();
+    assert!(state.handle_card_sidebar_click((toggle.x + 6, toggle.y), &mut outcome));
+    assert!(!state.collapsed_groups.contains("cards:sessions:ws_1"));
+    let rows = sidebar_rows(&mut state);
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("▾ 1 agent · 2 terminals")),
+        "{rows:#?}"
+    );
+}

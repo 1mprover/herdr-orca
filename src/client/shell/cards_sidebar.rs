@@ -26,6 +26,9 @@ use super::render::{
 /// Section collapse state shares `collapsed_groups` with worktree groups, so
 /// card sections carry a prefix that no repository key can start with.
 pub(super) const SECTION_KEY_PREFIX: &str = "cards:";
+/// A card's folded session list, keyed `cards:sessions:<workspace_id>` in
+/// `collapsed_groups`.
+pub(super) const SESSIONS_KEY_PREFIX: &str = "cards:sessions:";
 /// The search field, a blank row, the title with its counters, a blank row.
 const HEADER_ROWS: u16 = 4;
 const SUMMARY_STATUSES: [AgentStatus; 3] = [
@@ -90,7 +93,7 @@ pub(super) fn workspace_matches(
         || snapshot
             .panes
             .iter()
-            .any(|pane| pane.workspace_id == id && pane.label.as_deref().is_some_and(hit))
+            .any(|pane| pane.workspace_id == id && hit(&super::cards_rows::pane_label(pane)))
         || snapshot
             .agents
             .iter()
@@ -309,6 +312,9 @@ struct CardContext<'a> {
     sessions: &'a SessionIndex<'a>,
     /// Session rows the focused card may show and still fit in the list.
     focused_limit: usize,
+    collapsed_groups: &'a HashSet<String>,
+    /// A filter shows every card's sessions, folded or not.
+    filtering: bool,
 }
 
 fn build_card(context: &CardContext<'_>, index: usize) -> Option<BuiltCard> {
@@ -320,6 +326,8 @@ fn build_card(context: &CardContext<'_>, index: usize) -> Option<BuiltCard> {
         home,
         sessions,
         focused_limit,
+        collapsed_groups,
+        filtering,
     } = context;
     let palette = &config.palette;
     let cards = &config.cards;
@@ -409,6 +417,7 @@ fn build_card(context: &CardContext<'_>, index: usize) -> Option<BuiltCard> {
     }
 
     let sessions = sessions.sessions(id);
+    let folded = !*filtering && collapsed_groups.contains(&format!("{SESSIONS_KEY_PREFIX}{id}"));
     if focused {
         let mut counts = Vec::new();
         if sessions.agents > 0 || sessions.terminals == 0 {
@@ -430,7 +439,7 @@ fn build_card(context: &CardContext<'_>, index: usize) -> Option<BuiltCard> {
         let mut counter = CardLine::text(
             TEXT_COLUMN,
             vec![(
-                format!("▾ {}", counts.join(" · ")),
+                format!("{} {}", if folded { "▸" } else { "▾" }, counts.join(" · ")),
                 Style::default().fg(palette.overlay1),
             )],
             Vec::new(),
@@ -440,7 +449,9 @@ fn build_card(context: &CardContext<'_>, index: usize) -> Option<BuiltCard> {
     }
 
     let focused_row = sessions.rows.iter().position(|row| row.focused);
-    let window = if focused {
+    let window = if folded {
+        row_window(0, 0, None)
+    } else if focused {
         row_window(sessions.rows.len(), *focused_limit, focused_row)
     } else {
         row_window(sessions.rows.len(), usize::from(cards.inactive_rows), None)
@@ -637,6 +648,8 @@ pub(super) fn render_cards_sidebar(
         home: home.as_deref(),
         sessions: &sessions,
         focused_limit: usize::from(body.height).saturating_sub(FOCUSED_CARD_CHROME),
+        collapsed_groups: state.collapsed_groups,
+        filtering: !needle.is_empty(),
     };
     let view = CardsView {
         group_by: cards.group_by,
@@ -1320,7 +1333,7 @@ impl ClientShellState {
     }
 
     /// Clicks on the card sidebar's own controls: grouping, filter, summary,
-    /// section headers and session rows. Cards themselves use the shared
+    /// section headers, session counters and session rows. Cards themselves use the shared
     /// workspace hits.
     pub(super) fn handle_card_sidebar_click(
         &mut self,
@@ -1372,6 +1385,18 @@ impl ClientShellState {
             outcome.repaint = true;
             return true;
         }
+        if let Some(workspace_id) = self
+            .hits
+            .card_session_toggles
+            .iter()
+            .find(|(rect, _)| super::contains(*rect, point))
+            .map(|(_, workspace_id)| workspace_id.clone())
+        {
+            self.toggle_card_sessions(&workspace_id);
+            self.persist_chrome_preferences(outcome);
+            outcome.repaint = true;
+            return true;
+        }
         if let Some(pane_id) = self.card_session_at(point) {
             self.push_endpoint_method(
                 crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget { pane_id }),
@@ -1380,6 +1405,25 @@ impl ClientShellState {
             return true;
         }
         false
+    }
+
+    /// Folds or unfolds a card's session list, forgetting the folds of
+    /// workspaces that have since closed.
+    fn toggle_card_sessions(&mut self, workspace_id: &str) {
+        self.toggle_collapsed_group(
+            &ClientEndpointId::Local,
+            format!("{SESSIONS_KEY_PREFIX}{workspace_id}"),
+        );
+        if let Some(snapshot) = self.snapshot.as_deref() {
+            self.collapsed_groups.retain(|key| {
+                key.strip_prefix(SESSIONS_KEY_PREFIX).is_none_or(|id| {
+                    snapshot
+                        .workspaces
+                        .iter()
+                        .any(|workspace| workspace.workspace_id == id)
+                })
+            });
+        }
     }
 
     /// The pane of the session row under `point`.
