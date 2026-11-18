@@ -448,3 +448,113 @@ fn pin_entry_appears_in_the_workspace_menu_only_for_cards() {
     };
     assert!(menu.items().iter().all(|item| item.label != "Pin"));
 }
+
+fn session_ids<'a>(index: &'a cards_rows::SessionIndex<'a>, workspace_id: &str) -> Vec<&'a str> {
+    index
+        .sessions(workspace_id)
+        .rows
+        .iter()
+        .map(|row| row.pane_id)
+        .collect()
+}
+
+#[test]
+fn sessions_list_agents_then_terminals_in_tab_order() {
+    let snapshot = fleet();
+    let index = cards_rows::SessionIndex::new(&snapshot, "");
+    let orca = index.sessions("ws_1");
+    assert_eq!(orca.agents, 1);
+    assert_eq!(orca.terminals, 2);
+    assert_eq!(session_ids(&index, "ws_1"), ["pane_1", "pane_2", "pane_3"]);
+    assert!(orca.rows[0].focused);
+    assert!(!orca.rows[1].focused);
+    let notes = index.sessions("ws_3");
+    assert_eq!(notes.agents, 0);
+    assert_eq!(notes.terminals, 1);
+    assert!(index.sessions("missing").rows.is_empty());
+}
+
+#[test]
+fn a_status_change_does_not_reorder_rows() {
+    let mut snapshot = fleet();
+    snapshot
+        .agents
+        .push(agent("pane_3", "ws_1", "tab_2", AgentStatus::Done));
+    {
+        let index = cards_rows::SessionIndex::new(&snapshot, "");
+        assert_eq!(session_ids(&index, "ws_1"), ["pane_1", "pane_3", "pane_2"]);
+    }
+    snapshot.agents[0].agent_status = AgentStatus::Idle;
+    snapshot.agents[2].agent_status = AgentStatus::Blocked;
+    let index = cards_rows::SessionIndex::new(&snapshot, "");
+    assert_eq!(session_ids(&index, "ws_1"), ["pane_1", "pane_3", "pane_2"]);
+}
+
+#[test]
+fn the_filter_puts_matching_sessions_first() {
+    let snapshot = fleet();
+    let index = cards_rows::SessionIndex::new(&snapshot, "pane_3");
+    assert_eq!(session_ids(&index, "ws_1"), ["pane_3", "pane_1", "pane_2"]);
+}
+
+#[test]
+fn row_window_caps_and_keeps_the_focused_row() {
+    use cards_rows::{row_window, RowWindow};
+    let window = |start, len, hidden| RowWindow { start, len, hidden };
+    assert_eq!(row_window(3, 3, None), window(0, 3, 0));
+    // A "1 more" line would take the same row as the row itself.
+    assert_eq!(row_window(4, 3, None), window(0, 4, 0));
+    assert_eq!(row_window(5, 3, None), window(0, 3, 2));
+    assert_eq!(row_window(10, 3, Some(7)), window(5, 3, 7));
+    assert_eq!(row_window(10, 1, Some(9)), window(9, 1, 9));
+    assert_eq!(row_window(2, 0, Some(1)), window(0, 0, 0));
+}
+
+#[test]
+fn counts_use_plural_labels() {
+    let mut state = cards_state();
+    let words = ["agent", "agents", "agents"];
+    assert_eq!(
+        cards_rows::count_label(&state.config.cards, "agents", 1, words),
+        "1 agent"
+    );
+    assert_eq!(
+        cards_rows::count_label(&state.config.cards, "agents", 3, words),
+        "3 agents"
+    );
+    for (key, word) in [
+        ("agents_one", "агент"),
+        ("agents_few", "агента"),
+        ("agents_many", "агентов"),
+    ] {
+        state.config.cards.labels.insert(key.into(), word.into());
+    }
+    let counted = [1, 2, 5, 11, 21, 22]
+        .map(|count| cards_rows::count_label(&state.config.cards, "agents", count, words));
+    assert_eq!(
+        counted,
+        [
+            "1 агент",
+            "2 агента",
+            "5 агентов",
+            "11 агентов",
+            "21 агент",
+            "22 агента"
+        ]
+    );
+}
+
+#[test]
+fn claude_has_its_own_glyph() {
+    let state = cards_state();
+    let mut claude = agent("pane_1", "ws_1", "tab_1", AgentStatus::Idle);
+    assert_eq!(
+        cards_rows::agent_glyph(&claude, &state.config.palette).0,
+        "✳"
+    );
+    claude.display_agent = Some("mystery".into());
+    assert_eq!(
+        cards_rows::agent_glyph(&claude, &state.config.palette).0,
+        "◆"
+    );
+}

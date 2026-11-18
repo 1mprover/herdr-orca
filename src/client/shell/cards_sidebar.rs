@@ -12,7 +12,7 @@ use std::time::SystemTime;
 use super::*;
 use crate::api::schema::AgentStatus;
 use crate::config::{CardsGroupBy, CardsSidebarConfig};
-use crate::protocol::{ClientShellAgent, ClientShellPane};
+use crate::protocol::ClientShellAgent;
 use crate::ui::truncate_end;
 
 use super::cards_activity::{format_age, AgentActivityClock};
@@ -95,18 +95,7 @@ pub(super) fn workspace_matches(
             .agents
             .iter()
             .filter(|agent| agent.workspace_id == id)
-            .any(|agent| {
-                [
-                    &agent.display_agent,
-                    &agent.name,
-                    &agent.agent,
-                    &agent.title,
-                    &agent.terminal_title_stripped,
-                ]
-                .into_iter()
-                .flatten()
-                .any(|value| hit(value))
-            })
+            .any(|agent| super::cards_rows::agent_matches(agent, needle))
 }
 
 /// Cards in display order: pinned first, then workspace order or one section
@@ -207,23 +196,6 @@ pub(super) fn card_workspace_order(
             CardItem::Section { .. } | CardItem::Divider => None,
         })
         .collect()
-}
-
-fn basename(path: &str) -> Option<&str> {
-    path.trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .filter(|name| !name.is_empty())
-}
-
-fn pane_label(pane: &ClientShellPane) -> String {
-    pane.label
-        .as_deref()
-        .filter(|label| !label.is_empty())
-        .or_else(|| pane.foreground_cwd.as_deref().and_then(basename))
-        .or_else(|| pane.cwd.as_deref().and_then(basename))
-        .unwrap_or("terminal")
-        .to_owned()
 }
 
 fn agent_name(agent: &ClientShellAgent) -> &str {
@@ -480,7 +452,7 @@ fn build_card(context: &CardContext<'_>, index: usize) -> Option<BuiltCard> {
                     .panes
                     .iter()
                     .filter(|pane| pane.tab_id == tab.tab_id)
-                    .map(pane_label)
+                    .map(super::cards_rows::pane_label)
                     .collect::<Vec<_>>();
                 left.push((panes.join(" · "), Style::default().fg(palette.overlay1)));
             }
@@ -1309,12 +1281,6 @@ impl ClientShellState {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn basename_ignores_trailing_slashes() {
-        assert_eq!(basename("/home/me/project/"), Some("project"));
-        assert_eq!(basename("/"), None);
-    }
 
     #[test]
     fn paths_under_home_use_a_tilde() {

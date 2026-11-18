@@ -5,6 +5,7 @@ mod agent_sidebar;
 mod aggregate_navigation;
 mod cards_activity;
 mod cards_footer;
+mod cards_rows;
 mod cards_sidebar;
 mod machine_diagnostics;
 mod workspace_navigation;
