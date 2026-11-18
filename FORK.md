@@ -4,7 +4,7 @@
 [Orca](https://github.com/stablyai/orca). herdr остаётся терминальным
 приложением; меняется только боковая панель, и только если её включить.
 
-Ветка `orca-main` — наши изменения поверх `master` апстрима.
+Ветка `master` — наши изменения поверх `master` апстрима.
 
 ## Что добавлено
 
@@ -22,7 +22,7 @@
 
  ╭───────────────────────────────╮
  │ × herdr-orca                  │
- │   ⎇ orca-main              ↑3 │
+ │   ⎇ master                 ↑3 │
  │   ▾ 2 агента · 2 терминала    │
  │▎  × ✳ fix sidebar          2м │
  │   ◐ ◎ write card tests     6м │
@@ -140,5 +140,10 @@ herdr server stop                            # чтобы сервер подн�
 ```sh
 git remote add upstream https://github.com/herdrdev/herdr   # один раз
 git fetch upstream
-git rebase upstream/master orca-main
+git merge upstream/master
 ```
+
+Или кнопкой **Sync fork** на странице форка, если обновление не
+конфликтует с нашими изменениями. Сливаем, а не перебазируем: `master`
+опубликован, и rebase потребовал бы перезаписать его на GitHub. При
+конфликте git остановится: поправить файлы, затем `git add` и `git commit`.
