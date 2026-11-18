@@ -1,87 +1,74 @@
-# herdr
+# herdr-orca
 
-> **Fork note:** this is herdr-orca, herdr with an Orca-style card sidebar. See [FORK.md](FORK.md).
+Форк [herdr](https://github.com/herdrdev/herdr) с боковой панелью в духе
+[Orca](https://github.com/stablyai/orca).
 
+herdr — терминальное приложение для код-агентов: держит терминалы и агентов
+(Claude Code, Codex, Gemini и других) в фоновом сервере и показывает, кто
+работает, кто ждёт ответа, а кто закончил. В форке поменялась только левая
+панель, всё остальное — обычный herdr.
 
-<p align="center">
-  <img src="assets/logo.png" alt="herdr" width="100" />
-</p>
+## Как выглядит
 
-<p align="center">
-  <a href="https://herdr.dev">herdr.dev</a> · <a href="#install">install</a> · <a href="https://herdr.dev/docs/quick-start/">quick start</a> · <a href="https://herdr.dev/docs/">docs</a>
-</p>
+![herdr-orca: боковая панель с пространствами и сессиями](assets/fork/overview.png)
 
-<p align="center">
-  English · <a href="README.zh-CN.md">简体中文</a>
-</p>
+| Панель крупно | Поиск «test» |
+|:---:|:---:|
+| <img src="assets/fork/sidebar.png" alt="боковая панель крупно" width="410" /> | <img src="assets/fork/search.png" alt="поиск по сессиям" width="410" /> |
 
-<p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-666666?labelColor=333333" alt="Apache 2.0 license" /></a>
-  <a href="https://github.com/herdrdev/herdr/releases"><img src="https://img.shields.io/github/downloads/herdrdev/herdr/total?labelColor=333333&color=666666" alt="total GitHub release downloads" /></a>
-  <a href="https://github.com/herdrdev/herdr/stargazers"><img src="https://img.shields.io/github/stars/herdrdev/herdr?labelColor=333333&color=666666&logo=github" alt="GitHub stars" /></a>
-  <a href="https://github.com/herdrdev/herdr/releases/latest"><img src="https://img.shields.io/github/v/release/herdrdev/herdr?label=release&labelColor=333333&color=666666" alt="latest stable release" /></a>
-  <a href="https://formulae.brew.sh/formula/herdr"><img src="https://img.shields.io/homebrew/v/herdr?label=homebrew&labelColor=333333&color=666666" alt="Homebrew version" /></a>
-  <a href="https://x.com/herdrdev"><img src="https://img.shields.io/badge/follow-%40herdrdev-000000?logo=x&logoColor=white" alt="follow @herdrdev on X" /></a>
-</p>
+Слева — пространства, обычно одно на проект. У каждого видны его сессии:
+сначала агенты, потом обычные терминалы.
 
----
+- Текущее пространство обведено рамкой и показывает все сессии. Текущая
+  панель подсвечена полосой `▎`.
+- У остальных — первые три сессии и строка «… ещё N».
+- Под именем — ветка git и сколько коммитов не отправлено (`↑2`).
+- Статус агента: `×` ждёт ответа, `◐` работает, `✓` готово, `○` простаивает.
+  Справа — сколько времени он в этом статусе.
+- Вид агента: claude `✳`, codex `◎`, gemini `✦`, opencode `■`.
+- Наверху — сколько агентов в каждом статусе. Клик ведёт к следующему из них.
+- **Поиск** находит пространства и сессии по имени, ветке, вкладке, агенту и
+  тому, чем он занят. Совпавшие сессии встают первыми.
 
-https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
+Мышью: клик по сессии — перейти в эту панель, правый клик — меню панели,
+клик по `▾ 2 агента · 2 терминала` — свернуть список. Карточки можно
+перетаскивать и закреплять (правый клик → Pin).
 
-**the runtime your coding agents live on.**
+## Как установить
 
-- **detach without stopping work** — herdr keeps terminals running in a background server when you close the client or lose your SSH connection. after a server or machine restart, herdr restores the saved layout and can resume supported agent sessions; the original processes do not survive. [session state →](https://herdr.dev/docs/session-state/)
-- **several machines, one window** — keep local work and saved ssh machines together, with a combined agent list and independent reconnects. [remote machines →](https://herdr.dev/docs/connecting-machines/)
-- **never hunt for the stuck one** — every pane is marked working, blocked, or idle. when an agent stops and needs an answer, herdr says so.
-- **agent-native** — agents drive herdr through the cli and socket api: they can spawn panes, prompt each other, and wait until another agent is genuinely blocked. [agent skill →](https://herdr.dev/docs/agent-skill/)
-- **runs what you already run** — claude code, codex, cursor, opencode, grok and the rest. herdr doesn't wrap or replace them; it owns their terminals. building an agent? [add herdr support →](https://herdr.dev/docs/add-herdr-support/)
-- **keyboard and mouse, both first-class** — tmux-style prefix keys *and* click, drag, split. pick per moment, not per tool.
-- **plugins** — extend panes and workflows. [browse the marketplace →](https://herdr.dev/plugins/)
-- **one rust binary, no electron** — runs in whatever terminal you already use.
+Готовых сборок нет, собирается из исходников. Нужны:
 
----
+- Rust через [rustup](https://rustup.rs) — версию из `rust-toolchain.toml`
+  он поставит сам при первой сборке;
+- [Zig 0.16.0](https://ziglang.org/download/) — архив достаточно распаковать.
 
-## install
-
-```bash
-curl -fsSL https://herdr.dev/install.sh | sh
+```sh
+git clone https://github.com/1mprover/herdr-orca
+cd herdr-orca
+ZIG=/путь/к/zig-0.16.0/zig cargo build --release
+cp ~/.local/bin/herdr ~/.local/bin/herdr.bak   # если herdr уже стоял
+cp target/release/herdr ~/.local/bin/herdr
 ```
 
-or `brew install herdr` · `mise use -g herdr` · windows: `powershell -ExecutionPolicy Bypass -c "irm https://herdr.dev/install.ps1 | iex"` · [endpoint-protected Windows](https://herdr.dev/docs/windows-beta/) · [binaries](https://github.com/herdrdev/herdr/releases)
+Включи панель в `~/.config/herdr/config.toml` (если секции `[ui]` или
+`[ui.sidebar]` там уже есть, допиши строки в них):
 
-then start it where the work lives:
+```toml
+[ui]
+status_indicators = "symbols"   # значки × ◐ ✓ ○ вместо цветных точек
 
-```bash
-herdr
+[ui.sidebar]
+layout = "cards"
 ```
 
-run your agents, split panes, walk away. `ctrl+b q` detaches, `herdr` reattaches. [quick start →](https://herdr.dev/docs/quick-start/)
+Русские подписи, как на скриншотах, — в
+[`contrib/herder-botox/config/herdr-orca-cards.toml`](contrib/herder-botox/config/herdr-orca-cards.toml):
+скопируй оттуда секцию `[ui.sidebar.cards.labels]`.
 
-## docs
+Запусти `herdr`. Если он уже был запущен, переподключись: `ctrl+b q`, затем
+`herdr` — терминалы и агенты продолжат работать. Если herdr попросит
+перезапустить сервер: `herdr server stop` и снова `herdr`. Раскладка
+вернётся, но запущенные в терминалах процессы закроются.
 
-everything lives at [herdr.dev/docs](https://herdr.dev/docs/): [quick start](https://herdr.dev/docs/quick-start/) · [concepts](https://herdr.dev/docs/concepts/) · [supported agents](https://herdr.dev/docs/agents/) · [keyboard](https://herdr.dev/docs/keyboard/) · [configuration](https://herdr.dev/docs/configuration/) · [session state](https://herdr.dev/docs/session-state/) · [connecting machines](https://herdr.dev/docs/connecting-machines/) · [remote](https://herdr.dev/docs/persistence-remote/) · [integrations](https://herdr.dev/docs/integrations/) · [add herdr support to your agent](https://herdr.dev/docs/add-herdr-support/) · [plugins](https://herdr.dev/docs/plugins/) · [socket api](https://herdr.dev/docs/socket-api/)
-
-## thanks
-
-every past sponsor and backer is listed in [SPONSORS.md](./SPONSORS.md) — thank you 🐑
-
-enterprise / partnership: hey@herdr.dev
-
-## agent instructions
-
-if you are an ai agent helping with this repository, read [`AGENTS.md`](./AGENTS.md) before making changes and read [`CONTRIBUTING.md`](./CONTRIBUTING.md) before opening issues or PRs.
-
-## development
-
-```bash
-git clone https://github.com/herdrdev/herdr
-cd herdr
-cargo build --release
-
-just test        # unit tests
-just check       # formatting, tests, and maintenance checks
-```
-
-## license
-
-Herdr is licensed under the [Apache License 2.0](LICENSE).
+Все настройки панели, обновление из оригинального herdr и прочие подробности —
+в [FORK.md](FORK.md). Лицензия — Apache-2.0, как у herdr.
