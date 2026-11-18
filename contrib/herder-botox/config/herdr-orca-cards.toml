@@ -8,13 +8,16 @@ layout = "cards"
 
 [ui.sidebar.cards]
 group_by = "none"
-card_gap = 0
+card_gap = 1
+# Сколько строк сессий показывать на неактивных карточках.
+inactive_rows = 3
 # Остаток лимитов подписки внизу панели (тот же скрипт, что в tab_bar_right).
 footer_command = "$HOME/herder-botox/bin/herdr-limits.sh"
 footer_interval_seconds = 30
 
 [ui.sidebar.cards.labels]
 title = "пространства"
+search = "поиск"
 blocked = "ждёт"
 done = "готово"
 working = "работает"
@@ -28,3 +31,10 @@ now = "сейчас"
 minutes = "м"
 hours = "ч"
 days = "д"
+more = "ещё"
+agents_one = "агент"
+agents_few = "агента"
+agents_many = "агентов"
+terminals_one = "терминал"
+terminals_few = "терминала"
+terminals_many = "терминалов"

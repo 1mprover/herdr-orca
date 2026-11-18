@@ -96,7 +96,11 @@ fn cards_state() -> ClientShellState {
 }
 
 fn sidebar_rows(state: &mut ClientShellState) -> Vec<String> {
-    let frame = state.compose(120, 40).expect("frame");
+    sidebar_rows_at(state, 40)
+}
+
+fn sidebar_rows_at(state: &mut ClientShellState, height: u16) -> Vec<String> {
+    let frame = state.compose(120, height).expect("frame");
     let width = usize::from(state.hits.sidebar_divider.x);
     frame_rows(&frame)
         .into_iter()
@@ -138,115 +142,6 @@ fn endpoint_methods(outcome: &ClientShellInput) -> Vec<&crate::api::schema::Meth
 }
 
 #[test]
-fn cards_keep_workspace_order_and_the_focused_card_lists_its_tabs() {
-    let mut state = cards_state();
-    let rows = sidebar_rows(&mut state);
-
-    // Workspace order, not state order: the waiting card is not pulled up
-    // and the idle one is not pushed down.
-    let orca = row_of(&rows, "1 herdr-orca");
-    let bitrix = row_of(&rows, "2 bitrix");
-    let notes = row_of(&rows, "3 notes");
-    assert!(orca < bitrix && bitrix < notes, "{rows:#?}");
-    assert!(rows[orca].starts_with('▌'), "{rows:#?}");
-    assert!(rows[orca].ends_with('×'), "{rows:#?}");
-
-    // The focused card unfolds into its tabs; a tab without an agent names
-    // its panes.
-    assert!(rows[orca + 1].contains("/src/pane_1"), "{rows:#?}");
-    assert!(
-        rows[orca + 2].contains("├ claude  × fix sidebar"),
-        "{rows:#?}"
-    );
-    assert!(
-        rows[orca + 3].contains("└ build   pane_2 · pane_3"),
-        "{rows:#?}"
-    );
-    assert_eq!(bitrix, orca + 4, "{rows:#?}");
-
-    // Other cards are two lines: what the lead agent is doing, else the path.
-    assert!(rows[bitrix].ends_with('◐'), "{rows:#?}");
-    assert!(
-        rows[bitrix + 1].contains("claude · fix sidebar"),
-        "{rows:#?}"
-    );
-    assert!(rows[notes + 1].contains("/src/pane_5"), "{rows:#?}");
-    assert!(!rows.iter().any(|row| row.contains("WORKING")), "{rows:#?}");
-
-    assert_eq!(
-        state
-            .card_navigation_entries(state.snapshot.as_deref().unwrap())
-            .iter()
-            .map(|entry| entry.index)
-            .collect::<Vec<_>>(),
-        vec![0, 1, 2]
-    );
-}
-
-#[test]
-fn the_whole_card_is_one_click_target_and_tab_lines_focus_their_tab() {
-    let mut state = cards_state();
-    let rows = sidebar_rows(&mut state);
-
-    assert_eq!(state.hits.workspaces.len(), 3);
-    let orca = workspace_hit(&state, "ws_1");
-    let bitrix = workspace_hit(&state, "ws_2");
-    assert_eq!(orca.height, 4);
-    assert_eq!(bitrix.height, 2);
-    assert_eq!(usize::from(bitrix.y), row_of(&rows, "2 bitrix"));
-    // Every column of the card counts, not just the label.
-    assert_eq!(bitrix.width, state.hits.sidebar_divider.x);
-
-    let (tab_rect, tab_id) = state
-        .hits
-        .card_tabs
-        .iter()
-        .find(|(_, tab_id)| tab_id == "tab_2")
-        .cloned()
-        .expect("build tab line");
-    assert_eq!(usize::from(tab_rect.y), row_of(&rows, "└ build"));
-    let mut outcome = ClientShellInput::default();
-    assert!(state.handle_card_sidebar_click((tab_rect.x + 20, tab_rect.y), &mut outcome));
-    assert!(matches!(
-        endpoint_methods(&outcome).as_slice(),
-        [crate::api::schema::Method::TabFocus(target)] if target.tab_id == tab_id
-    ));
-    // The card's own lines fall through to the workspace hit.
-    let mut outcome = ClientShellInput::default();
-    assert!(!state.handle_card_sidebar_click((bitrix.x + 10, bitrix.y + 1), &mut outcome));
-}
-
-#[test]
-fn ages_show_how_long_the_lead_agent_has_been_in_its_state() {
-    let mut state = cards_state();
-    let rows = sidebar_rows(&mut state);
-    // Agents already running when the client attached have no known start.
-    assert!(rows[row_of(&rows, "2 bitrix")].ends_with('◐'), "{rows:#?}");
-
-    state.cards_clock.stamp_for_test(
-        "pane_4",
-        1,
-        SystemTime::now() - Duration::from_secs(5 * 60 + 10),
-    );
-    let rows = sidebar_rows(&mut state);
-    assert!(
-        rows[row_of(&rows, "2 bitrix")].ends_with("◐ 5m"),
-        "{rows:#?}"
-    );
-
-    state
-        .config
-        .cards
-        .labels
-        .insert("minutes".into(), "м".into());
-    let rows = sidebar_rows(&mut state);
-    assert!(
-        rows[row_of(&rows, "2 bitrix")].ends_with("◐ 5м"),
-        "{rows:#?}"
-    );
-}
-
-#[test]
 fn summary_counts_jump_to_the_next_agent_in_that_state() {
     let mut state = cards_state();
     sidebar_rows(&mut state);
@@ -270,12 +165,14 @@ fn pinned_cards_come_first_and_the_filter_narrows_the_list() {
     let mut state = cards_state();
     state.toggle_pinned_workspace("ws_3".into());
     let rows = sidebar_rows(&mut state);
-    let notes = row_of(&rows, "3 notes");
-    let orca = row_of(&rows, "1 herdr-orca");
+    let notes = row_of(&rows, "notes");
+    let orca = row_of(&rows, "herdr-orca");
     assert_eq!(notes, 4, "{rows:#?}");
-    // One blank row separates pinned cards from the rest.
-    assert_eq!(orca, notes + 3, "{rows:#?}");
-    assert!(rows[notes + 2].is_empty(), "{rows:#?}");
+    // One blank row separates pinned cards from the rest; notes has a name,
+    // a path and one terminal row.
+    assert!(rows[notes + 3].is_empty(), "{rows:#?}");
+    assert!(rows[notes + 4].contains('╭'), "{rows:#?}");
+    assert_eq!(orca, notes + 5, "{rows:#?}");
 
     state.sidebar_filter = TextEditor::from("BIT");
     let rows = sidebar_rows(&mut state);
@@ -315,7 +212,7 @@ fn the_group_button_toggles_repository_sections_that_collapse() {
     let rows = sidebar_rows(&mut state);
     let section = row_of(&rows, "▾ no repo");
     assert!(rows[section].ends_with('3'), "{rows:#?}");
-    assert!(section < row_of(&rows, "1 herdr-orca"));
+    assert!(section < row_of(&rows, "herdr-orca"));
 
     // A collapsed section keeps only the focused card.
     let (rect, key) = state.hits.card_sections[0].clone();
@@ -573,4 +470,223 @@ fn the_header_has_a_search_field_and_counters_beside_the_title() {
     // The search field and the counters are click targets on their rows.
     assert_eq!(state.hits.card_filter_toggle.y, 0);
     assert!(state.hits.card_status.iter().all(|(rect, _)| rect.y == 2));
+}
+
+/// fleet() with `count` more agents in bitrix's tab, titled "task N".
+fn fleet_with_bitrix_agents(count: usize) -> ClientShellSnapshot {
+    let mut snapshot = fleet();
+    let pane = snapshot.panes[3].clone();
+    for n in 0..count {
+        let pane_id = format!("pane_b{n}");
+        snapshot.panes.push(ClientShellPane {
+            pane_id: pane_id.clone(),
+            focused: false,
+            ..pane.clone()
+        });
+        let mut extra = agent(&pane_id, "ws_2", "tab_3", AgentStatus::Done);
+        extra.terminal_title_stripped = Some(format!("task {n}"));
+        snapshot.agents.push(extra);
+    }
+    snapshot
+}
+
+fn session_hit(state: &ClientShellState, pane_id: &str) -> Rect {
+    state
+        .hits
+        .card_sessions
+        .iter()
+        .find(|(_, id)| id == pane_id)
+        .map(|(rect, _)| *rect)
+        .unwrap_or_else(|| panic!("no session row for {pane_id}"))
+}
+
+#[test]
+fn the_focused_card_is_framed_and_lists_agents_then_terminals() {
+    let mut state = cards_state();
+    let rows = sidebar_rows(&mut state);
+    let orca = row_of(&rows, "herdr-orca");
+    assert!(
+        rows[orca - 1].contains('╭') && rows[orca - 1].ends_with('╮'),
+        "{rows:#?}"
+    );
+    assert!(rows[orca].contains("│ × herdr-orca"), "{rows:#?}");
+    assert!(rows[orca + 1].contains("/src/pane_1"), "{rows:#?}");
+    assert!(
+        rows[orca + 2].contains("▾ 1 agent · 2 terminals"),
+        "{rows:#?}"
+    );
+    assert!(rows[orca + 3].contains("▎  × ✳ fix sidebar"), "{rows:#?}");
+    assert!(rows[orca + 4].contains("$ build · pane_2"), "{rows:#?}");
+    assert!(rows[orca + 5].contains("$ build · pane_3"), "{rows:#?}");
+    assert!(
+        rows[orca + 6].contains('╰') && rows[orca + 6].ends_with('╯'),
+        "{rows:#?}"
+    );
+
+    // Workspace order, not state order, with one blank row between cards.
+    let bitrix = row_of(&rows, "bitrix");
+    let notes = row_of(&rows, "notes");
+    assert_eq!(bitrix, orca + 8, "{rows:#?}");
+    assert!(bitrix < notes, "{rows:#?}");
+    // Other cards have no frame and list their sessions too.
+    assert!(
+        rows[bitrix].contains("◐ bitrix") && !rows[bitrix].contains('│'),
+        "{rows:#?}"
+    );
+    assert!(rows[bitrix + 1].contains("/src/pane_4"), "{rows:#?}");
+    assert!(rows[bitrix + 2].contains("◐ ✳ fix sidebar"), "{rows:#?}");
+    assert!(rows[notes + 2].contains("$ 1 · pane_5"), "{rows:#?}");
+    assert_eq!(
+        state
+            .card_navigation_entries(state.snapshot.as_deref().unwrap())
+            .iter()
+            .map(|entry| entry.index)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+}
+
+#[test]
+fn inactive_cards_show_capped_sessions() {
+    let mut state = cards_state();
+    state.set_snapshot(Box::new(fleet_with_bitrix_agents(4)));
+    let rows = sidebar_rows(&mut state);
+    let bitrix = row_of(&rows, "bitrix");
+    assert!(rows[bitrix + 4].contains("task 1"), "{rows:#?}");
+    assert!(rows[bitrix + 5].contains("… more 2"), "{rows:#?}");
+    assert!(!rows.iter().any(|row| row.contains("task 2")), "{rows:#?}");
+
+    // One hidden row is shown rather than summed up.
+    state.set_snapshot(Box::new(fleet_with_bitrix_agents(3)));
+    let rows = sidebar_rows(&mut state);
+    let bitrix = row_of(&rows, "bitrix");
+    assert!(rows[bitrix + 5].contains("task 2"), "{rows:#?}");
+    assert!(!rows.iter().any(|row| row.contains("more")), "{rows:#?}");
+}
+
+#[test]
+fn session_rows_focus_their_pane_and_cards_select_their_workspace() {
+    let mut state = cards_state();
+    let rows = sidebar_rows(&mut state);
+    let bitrix = row_of(&rows, "bitrix");
+    let row = session_hit(&state, "pane_4");
+    assert_eq!(usize::from(row.y), bitrix + 2);
+    let mut outcome = ClientShellInput::default();
+    assert!(state.handle_card_sidebar_click((row.x + 12, row.y), &mut outcome));
+    assert!(matches!(
+        endpoint_methods(&outcome).as_slice(),
+        [crate::api::schema::Method::PaneFocus(target)] if target.pane_id == "pane_4"
+    ));
+    // The card's own lines fall through to the workspace hit.
+    let card = workspace_hit(&state, "ws_2");
+    assert_eq!(card.height, 3);
+    assert_eq!(card.width, state.hits.sidebar_divider.x);
+    let mut outcome = ClientShellInput::default();
+    assert!(!state.handle_card_sidebar_click((card.x + 6, card.y), &mut outcome));
+}
+
+#[test]
+fn right_click_on_a_session_opens_its_pane_menu() {
+    let mut state = cards_state();
+    sidebar_rows(&mut state);
+    let row = session_hit(&state, "pane_2");
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: row.x + 10,
+        row: row.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+            target: ClientContextMenuTarget::Pane { ref pane_id, .. },
+            ..
+        })) if pane_id == "pane_2"
+    ));
+}
+
+#[test]
+fn a_tall_focused_card_fits_and_keeps_the_focused_row() {
+    let mut state = cards_state();
+    let mut snapshot = fleet();
+    let pane = snapshot.panes[0].clone();
+    for n in 0..9 {
+        let pane_id = format!("pane_a{n}");
+        snapshot.panes.push(ClientShellPane {
+            pane_id: pane_id.clone(),
+            focused: false,
+            ..pane.clone()
+        });
+        let mut extra = agent(&pane_id, "ws_1", "tab_1", AgentStatus::Working);
+        extra.terminal_title_stripped = Some(format!("job {n}"));
+        snapshot.agents.push(extra);
+    }
+    snapshot.focused_pane_id = Some("pane_a8".into());
+    state.set_snapshot(Box::new(snapshot));
+    let rows = sidebar_rows_at(&mut state, 16);
+    assert!(
+        rows.iter().any(|row| row.contains("▎  ◐ ✳ job 8")),
+        "{rows:#?}"
+    );
+    assert!(rows.iter().any(|row| row.contains("… more 7")), "{rows:#?}");
+    assert!(rows.iter().any(|row| row.contains('╰')), "{rows:#?}");
+}
+
+#[test]
+fn ages_sit_on_agent_rows() {
+    let mut state = cards_state();
+    let rows = sidebar_rows(&mut state);
+    let bitrix = row_of(&rows, "bitrix");
+    // Agents already running when the client attached have no known start.
+    assert!(rows[bitrix + 2].ends_with("fix sidebar"), "{rows:#?}");
+
+    state.cards_clock.stamp_for_test(
+        "pane_4",
+        1,
+        SystemTime::now() - Duration::from_secs(5 * 60 + 10),
+    );
+    let rows = sidebar_rows(&mut state);
+    assert!(rows[bitrix + 2].ends_with("5m"), "{rows:#?}");
+    state
+        .config
+        .cards
+        .labels
+        .insert("minutes".into(), "м".into());
+    let rows = sidebar_rows(&mut state);
+    assert!(rows[bitrix + 2].ends_with("5м"), "{rows:#?}");
+}
+
+#[test]
+fn narrow_sidebar_keeps_the_frame_inside() {
+    let mut state = cards_state();
+    state.config.sidebar_width = 24;
+    state.sidebar_width = 24;
+    let rows = sidebar_rows(&mut state);
+    let top = rows
+        .iter()
+        .find(|row| row.contains('╭'))
+        .unwrap_or_else(|| panic!("no frame: {rows:#?}"));
+    assert!(top.ends_with('╮'), "{rows:#?}");
+    assert!(
+        rows.iter()
+            .any(|row| row.contains('╰') && row.ends_with('╯')),
+        "{rows:#?}"
+    );
+}
+
+#[test]
+fn long_titles_truncate_before_the_age() {
+    let mut state = cards_state();
+    let mut snapshot = fleet();
+    snapshot.agents[1].terminal_title_stripped = Some("漢".repeat(40));
+    state.set_snapshot(Box::new(snapshot));
+    state.cards_clock.stamp_for_test(
+        "pane_4",
+        1,
+        SystemTime::now() - Duration::from_secs(5 * 60 + 10),
+    );
+    let rows = sidebar_rows(&mut state);
+    let bitrix = row_of(&rows, "bitrix");
+    assert!(rows[bitrix + 2].contains('…'), "{rows:#?}");
+    assert!(rows[bitrix + 2].ends_with("5m"), "{rows:#?}");
 }

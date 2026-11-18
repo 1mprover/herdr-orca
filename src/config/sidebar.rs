@@ -514,9 +514,14 @@ pub struct CardsSidebarConfig {
     pub group_by: CardsGroupBy,
     /// Blank rows between cards.
     pub card_gap: u16,
-    /// Overrides for the sidebar's words, keyed by `title`, `filter`,
+    /// Session rows shown on cards other than the focused one; the rest are
+    /// summed up on a "… more N" line. 0 shows none.
+    pub inactive_rows: u16,
+    /// Overrides for the sidebar's words, keyed by `title`, `search`,
     /// `blocked`, `done`, `working`, `idle`, `no_repo`, `new`, `menu`, `now`,
-    /// `minutes`, `hours` and `days`.
+    /// `minutes`, `hours`, `days`, `empty`, `no_matches`, `more`, `agents_one`,
+    /// `agents_few`,
+    /// `agents_many`, `terminals_one`, `terminals_few` and `terminals_many`.
     pub labels: std::collections::BTreeMap<String, String>,
     /// Shell command whose first output line is shown at the bottom of the
     /// card sidebar, e.g. remaining subscription limits. Empty disables it.
@@ -528,7 +533,8 @@ impl Default for CardsSidebarConfig {
     fn default() -> Self {
         Self {
             group_by: CardsGroupBy::None,
-            card_gap: 0,
+            card_gap: 1,
+            inactive_rows: 3,
             labels: Default::default(),
             footer_command: String::new(),
             footer_interval_seconds: 30,
@@ -587,7 +593,8 @@ mod tests {
         assert_eq!(config.spaces.row_gap, 0);
         assert_eq!(config.layout, SidebarLayoutConfig::Panels);
         assert_eq!(config.cards.group_by, CardsGroupBy::None);
-        assert_eq!(config.cards.card_gap, 0);
+        assert_eq!(config.cards.card_gap, 1);
+        assert_eq!(config.cards.inactive_rows, 3);
     }
 
     #[test]
@@ -600,6 +607,7 @@ layout = "cards"
 [ui.sidebar.cards]
 group_by = "project"
 card_gap = 1
+inactive_rows = 0
 labels = { blocked = "ждёт", title = "  " }
 footer_command = "echo 5h 80%"
 footer_interval_seconds = 10
@@ -610,6 +618,7 @@ footer_interval_seconds = 10
         assert_eq!(sidebar.layout, SidebarLayoutConfig::Cards);
         assert_eq!(sidebar.cards.group_by, CardsGroupBy::Project);
         assert_eq!(sidebar.cards.card_gap, 1);
+        assert_eq!(sidebar.cards.inactive_rows, 0);
         assert_eq!(sidebar.cards.label("blocked", "waiting"), "ждёт");
         // Blank labels fall back to the default word.
         assert_eq!(sidebar.cards.label("title", "workspaces"), "workspaces");

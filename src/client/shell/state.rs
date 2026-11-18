@@ -104,7 +104,10 @@ pub(super) struct ShellHitMap {
     pub(super) agent_sort_toggle: Rect,
     pub(super) card_group_toggle: Rect,
     pub(super) card_sections: Vec<(Rect, String)>,
-    pub(super) card_tabs: Vec<(Rect, String)>,
+    /// Session rows, by pane id.
+    pub(super) card_sessions: Vec<(Rect, String)>,
+    /// Counter rows that collapse a card's sessions, by workspace id.
+    pub(super) card_session_toggles: Vec<(Rect, String)>,
     pub(super) card_filter: Rect,
     pub(super) card_filter_toggle: Rect,
     pub(super) card_filter_cursor: Option<crate::protocol::CursorState>,

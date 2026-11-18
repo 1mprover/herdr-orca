@@ -1856,9 +1856,9 @@ impl ClientShellState {
                 if !self.config.mouse_capture {
                     return;
                 }
-                // Tab lines sit inside their card's workspace hit.
-                if let Some(tab_id) = self.card_tab_at(point) {
-                    self.open_tab_context_menu(tab_id, mouse.column, mouse.row);
+                // Session rows sit inside their card's workspace hit.
+                if let Some(pane_id) = self.card_session_at(point) {
+                    self.open_pane_context_menu(pane_id, mouse.column, mouse.row);
                     outcome.repaint = true;
                     return;
                 }

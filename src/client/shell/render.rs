@@ -352,7 +352,8 @@ pub(super) fn render_shell(
         hits.agent_sort_toggle = Rect::default();
         hits.card_group_toggle = Rect::default();
         hits.card_sections.clear();
-        hits.card_tabs.clear();
+        hits.card_sessions.clear();
+        hits.card_session_toggles.clear();
         hits.card_filter = Rect::default();
         hits.card_filter_toggle = Rect::default();
         hits.card_status.clear();

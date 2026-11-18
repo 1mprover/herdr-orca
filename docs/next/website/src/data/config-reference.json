@@ -1113,14 +1113,20 @@
         {
           "key": "ui.sidebar.cards.card_gap",
           "type": "integer",
-          "default": "0",
+          "default": "1",
           "description": "Blank terminal rows between cards."
+        },
+        {
+          "key": "ui.sidebar.cards.inactive_rows",
+          "type": "integer",
+          "default": "3",
+          "description": "Session rows (agents, then terminals) shown on cards other than the focused one. The rest are summed up on a \"… more N\" line. 0 shows none. The focused card lists every session that fits."
         },
         {
           "key": "ui.sidebar.cards.labels",
           "type": "table of strings",
           "default": "{}",
-          "description": "Text overrides for the card sidebar, keyed by title, blocked, done, working, idle, no_repo, new, menu, empty, no_matches, now, minutes, hours and days, for example { blocked = \"ждёт\", minutes = \"м\" }. Blank values keep the default."
+          "description": "Text overrides for the card sidebar, keyed by title, search, blocked, done, working, idle, no_repo, new, menu, empty, no_matches, now, minutes, hours, days, more, agents_one, agents_few, agents_many, terminals_one, terminals_few and terminals_many, for example { blocked = \"ждёт\", minutes = \"м\" }. The one, few and many forms follow Russian plural rules (1, 2–4, 5+). Blank values keep the default."
         },
         {
           "key": "ui.sidebar.cards.footer_command",

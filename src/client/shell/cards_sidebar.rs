@@ -1,7 +1,8 @@
-//! The card sidebar: a stable list of compact workspace cards. Each card shows
-//! its lead agent's state, what that agent is doing and for how long; the
-//! focused card unfolds into its tabs. Pinned cards come first, a summary row
-//! counts agents by state, and an optional status line sits above the footer.
+//! The card sidebar: a stable list of workspace cards. Each card shows its lead
+//! agent's state, its branch and its sessions: agents with what they are doing
+//! and for how long, then plain terminals. The focused card sits in a frame and
+//! lists every session that fits. Pinned cards come first, the header counts
+//! agents by state, and an optional status line sits above the footer.
 //!
 //! Cards never move because an agent changed state: the order is the
 //! workspace order (or repository sections), so a card stays where you left
@@ -16,6 +17,7 @@ use crate::protocol::ClientShellAgent;
 use crate::ui::truncate_end;
 
 use super::cards_activity::{format_age, AgentActivityClock};
+use super::cards_rows::{agent_glyph, count_label, row_window, SessionIndex, SessionKind};
 use super::render::{
     display_width, put_right_text, put_segment, put_text, render_sidebar_background,
     ShellRenderState,
@@ -26,8 +28,6 @@ use super::render::{
 pub(super) const SECTION_KEY_PREFIX: &str = "cards:";
 /// The search field, a blank row, the title with its counters, a blank row.
 const HEADER_ROWS: u16 = 4;
-/// Widest tab label in the focused card's tree before it is shortened.
-const TAB_LABEL_MAX: usize = 12;
 const SUMMARY_STATUSES: [AgentStatus; 3] = [
     AgentStatus::Blocked,
     AgentStatus::Done,
@@ -198,15 +198,6 @@ pub(super) fn card_workspace_order(
         .collect()
 }
 
-fn agent_name(agent: &ClientShellAgent) -> &str {
-    agent
-        .display_agent
-        .as_deref()
-        .or(agent.name.as_deref())
-        .or(agent.agent.as_deref())
-        .unwrap_or("agent")
-}
-
 /// What the agent is doing: its terminal title, else its state in words.
 fn agent_activity<'a>(cards: &'a CardsSidebarConfig, agent: &'a ClientShellAgent) -> &'a str {
     agent
@@ -245,16 +236,50 @@ fn display_path(path: &str, home: Option<&str>) -> String {
 type Segment = (String, Style);
 
 struct CardLine {
+    /// One-cell marks at fixed columns, as offsets from the card's left edge.
+    marks: Vec<(u16, Segment)>,
+    /// Where the text starts, as an offset from the card's left edge.
+    indent: u16,
     left: Vec<Segment>,
     right: Vec<Segment>,
-    /// Tab lines in the focused card focus that tab; every other line selects
-    /// the workspace.
-    tab_id: Option<String>,
+    /// Session rows focus their pane; every other line selects the workspace.
+    pane_id: Option<String>,
+    /// The counter row folds the card's session list.
+    toggle: bool,
+    /// The focused pane's row.
+    highlight: bool,
 }
+
+impl CardLine {
+    fn text(indent: u16, left: Vec<Segment>, right: Vec<Segment>) -> Self {
+        Self {
+            marks: Vec::new(),
+            indent,
+            left,
+            right,
+            pane_id: None,
+            toggle: false,
+            highlight: false,
+        }
+    }
+}
+
+/// Card columns: the frame, the workspace status, the text, and the agent
+/// glyph and title of session rows.
+const FRAME_COLUMN: u16 = 1;
+const STATUS_COLUMN: u16 = 3;
+const TEXT_COLUMN: u16 = 5;
+const GLYPH_COLUMN: u16 = 7;
+const TITLE_COLUMN: u16 = 9;
+/// The frame, the name, branch and counter rows, and the "… more N" row a
+/// focused card needs besides its session rows.
+const FOCUSED_CARD_CHROME: usize = 6;
 
 struct BuiltCard {
     index: usize,
     lines: Vec<CardLine>,
+    /// The focused card sits in a frame.
+    framed: bool,
 }
 
 enum BuiltItem {
@@ -267,7 +292,10 @@ impl BuiltItem {
     fn height(&self) -> u16 {
         match self {
             Self::Section(_) | Self::Divider => 1,
-            Self::Card(card) => card.lines.len().clamp(1, u16::MAX as usize) as u16,
+            Self::Card(card) => {
+                let frame = if card.framed { 2 } else { 0 };
+                (card.lines.len() + frame).clamp(1, u16::MAX as usize) as u16
+            }
         }
     }
 }
@@ -278,6 +306,9 @@ struct CardContext<'a> {
     clock: &'a AgentActivityClock,
     now: SystemTime,
     home: Option<&'a str>,
+    sessions: &'a SessionIndex<'a>,
+    /// Session rows the focused card may show and still fit in the list.
+    focused_limit: usize,
 }
 
 fn build_card(context: &CardContext<'_>, index: usize) -> Option<BuiltCard> {
@@ -287,6 +318,8 @@ fn build_card(context: &CardContext<'_>, index: usize) -> Option<BuiltCard> {
         clock,
         now,
         home,
+        sessions,
+        focused_limit,
     } = context;
     let palette = &config.palette;
     let cards = &config.cards;
@@ -299,171 +332,182 @@ fn build_card(context: &CardContext<'_>, index: usize) -> Option<BuiltCard> {
         .filter(|agent| agent.workspace_id == id)
         .collect::<Vec<_>>();
     let lead = lead_agent(&agents, clock);
-
-    let bar = if focused {
-        ("▌".to_owned(), Style::default().fg(palette.accent))
-    } else {
-        (" ".to_owned(), Style::default())
-    };
-    let number = format!("{} ", workspace.number);
-    let indent = " ".repeat(1 + display_width(&number) as usize);
     let dim = Style::default().fg(palette.overlay0);
-    let mut lines = Vec::new();
-
-    let mut right = Vec::new();
-    if let Some(lead) = lead {
-        let status = lead.agent_status;
-        right.push((
+    let status_mark = |status: AgentStatus| {
+        (
             status_icon(status, config.status_indicators).to_owned(),
             Style::default().fg(status_color(status, palette)),
-        ));
-        if let Some(since) = clock.since(&lead.pane_id) {
-            right.push((format!(" {}", format_age(cards, since, *now)), dim));
-        }
-    }
-    lines.push(CardLine {
-        left: vec![
-            bar.clone(),
-            (" ".to_owned(), Style::default()),
-            (number, dim),
-            (
-                workspace.label.clone(),
-                Style::default()
-                    .fg(if focused {
-                        palette.text
-                    } else {
-                        palette.subtext0
-                    })
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ],
-        right,
-        tab_id: None,
-    });
-
-    let path = || {
-        let pane = snapshot
-            .panes
-            .iter()
-            .filter(|pane| pane.tab_id == workspace.active_tab_id)
-            .max_by_key(|pane| pane.focused);
-        let path = pane
-            .and_then(|pane| pane.foreground_cwd.as_deref().or(pane.cwd.as_deref()))
-            .unwrap_or(&workspace.new_workspace_cwd);
-        (display_path(path, *home), dim)
+        )
     };
-    let mut detail = vec![bar.clone(), (indent.clone(), Style::default())];
-    let mut detail_right = Vec::new();
-    if focused {
-        // The tab lines below say what each agent is doing.
-        match workspace.branch.as_deref() {
-            Some(branch) => {
-                let mut text = format!("⎇ {branch}");
-                if let Some((ahead, behind)) = workspace.git_ahead_behind {
-                    if ahead > 0 {
-                        text.push_str(&format!(" ↑{ahead}"));
-                    }
-                    if behind > 0 {
-                        text.push_str(&format!(" ↓{behind}"));
-                    }
-                }
-                detail.push((text, Style::default().fg(palette.mauve)));
-            }
-            None => detail.push(path()),
-        }
-    } else if let Some(lead) = lead {
-        detail.push((
-            agent_name(lead).to_owned(),
-            Style::default().fg(palette.subtext0),
-        ));
-        detail.push((
-            format!(" · {}", agent_activity(cards, lead)),
-            Style::default().fg(palette.overlay1),
-        ));
-        if agents.len() > 1 {
-            detail_right.push((format!("+{}", agents.len() - 1), dim));
-        }
-    } else {
-        detail.push(path());
-    }
-    lines.push(CardLine {
-        left: detail,
-        right: detail_right,
-        tab_id: None,
-    });
+    let mut lines = Vec::new();
 
-    if focused {
-        let tabs = snapshot
-            .tabs
-            .iter()
-            .filter(|tab| tab.workspace_id == id)
-            .collect::<Vec<_>>();
-        let label_width = tabs
-            .iter()
-            .map(|tab| display_width(&tab.label) as usize)
-            .max()
-            .unwrap_or(0)
-            .min(TAB_LABEL_MAX);
-        for (position, tab) in tabs.iter().enumerate() {
-            let branch = if position + 1 == tabs.len() {
-                "└ "
-            } else {
-                "├ "
-            };
-            let label = truncate_end(&tab.label, label_width);
-            let padding =
-                " ".repeat(label_width.saturating_sub(display_width(&label) as usize) + 2);
-            let mut left = vec![
-                bar.clone(),
-                (indent.clone(), Style::default()),
-                (branch.to_owned(), dim),
-                (
-                    format!("{label}{padding}"),
-                    if tab.focused {
-                        Style::default()
-                            .fg(palette.text)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(palette.subtext0)
-                    },
-                ),
-            ];
-            let tab_agents = agents
-                .iter()
-                .copied()
-                .filter(|agent| agent.tab_id == tab.tab_id)
-                .collect::<Vec<_>>();
-            let mut right = Vec::new();
-            if let Some(agent) = lead_agent(&tab_agents, clock) {
-                let status = agent.agent_status;
-                left.push((
-                    format!("{} ", status_icon(status, config.status_indicators)),
-                    Style::default().fg(status_color(status, palette)),
-                ));
-                left.push((
-                    agent_activity(cards, agent).to_owned(),
-                    Style::default().fg(palette.overlay1),
-                ));
-                if tab_agents.len() > 1 {
-                    right.push((format!("+{}", tab_agents.len() - 1), dim));
+    let lead_status = lead.map_or(AgentStatus::Unknown, |lead| lead.agent_status);
+    let mut name = CardLine::text(
+        TEXT_COLUMN,
+        vec![(
+            workspace.label.clone(),
+            Style::default()
+                .fg(if focused {
+                    palette.text
+                } else {
+                    palette.subtext0
+                })
+                .add_modifier(Modifier::BOLD),
+        )],
+        Vec::new(),
+    );
+    name.marks.push((STATUS_COLUMN, status_mark(lead_status)));
+    lines.push(name);
+
+    match workspace.branch.as_deref() {
+        Some(branch) => {
+            let mut ahead_behind = Vec::new();
+            if let Some((ahead, behind)) = workspace.git_ahead_behind {
+                if ahead > 0 {
+                    ahead_behind.push(format!("↑{ahead}"));
                 }
-            } else {
-                let panes = snapshot
-                    .panes
-                    .iter()
-                    .filter(|pane| pane.tab_id == tab.tab_id)
-                    .map(super::cards_rows::pane_label)
-                    .collect::<Vec<_>>();
-                left.push((panes.join(" · "), Style::default().fg(palette.overlay1)));
+                if behind > 0 {
+                    ahead_behind.push(format!("↓{behind}"));
+                }
             }
-            lines.push(CardLine {
-                left,
+            let right = if ahead_behind.is_empty() {
+                Vec::new()
+            } else {
+                vec![(ahead_behind.join(" "), dim)]
+            };
+            lines.push(CardLine::text(
+                TEXT_COLUMN,
+                vec![
+                    ("⎇ ".to_owned(), Style::default().fg(palette.mauve)),
+                    (
+                        branch.to_owned(),
+                        Style::default().fg(if focused {
+                            palette.overlay1
+                        } else {
+                            palette.overlay0
+                        }),
+                    ),
+                ],
                 right,
-                tab_id: Some(tab.tab_id.clone()),
-            });
+            ));
+        }
+        None => {
+            let pane = snapshot
+                .panes
+                .iter()
+                .filter(|pane| pane.tab_id == workspace.active_tab_id)
+                .max_by_key(|pane| pane.focused);
+            let path = pane
+                .and_then(|pane| pane.foreground_cwd.as_deref().or(pane.cwd.as_deref()))
+                .unwrap_or(&workspace.new_workspace_cwd);
+            lines.push(CardLine::text(
+                TEXT_COLUMN,
+                vec![(display_path(path, *home), dim)],
+                Vec::new(),
+            ));
         }
     }
-    Some(BuiltCard { index, lines })
+
+    let sessions = sessions.sessions(id);
+    if focused {
+        let mut counts = Vec::new();
+        if sessions.agents > 0 || sessions.terminals == 0 {
+            counts.push(count_label(
+                cards,
+                "agents",
+                sessions.agents,
+                ["agent", "agents", "agents"],
+            ));
+        }
+        if sessions.terminals > 0 {
+            counts.push(count_label(
+                cards,
+                "terminals",
+                sessions.terminals,
+                ["terminal", "terminals", "terminals"],
+            ));
+        }
+        let mut counter = CardLine::text(
+            TEXT_COLUMN,
+            vec![(
+                format!("▾ {}", counts.join(" · ")),
+                Style::default().fg(palette.overlay1),
+            )],
+            Vec::new(),
+        );
+        counter.toggle = true;
+        lines.push(counter);
+    }
+
+    let focused_row = sessions.rows.iter().position(|row| row.focused);
+    let window = if focused {
+        row_window(sessions.rows.len(), *focused_limit, focused_row)
+    } else {
+        row_window(sessions.rows.len(), usize::from(cards.inactive_rows), None)
+    };
+    for row in sessions.rows.iter().skip(window.start).take(window.len) {
+        let highlight = focused && row.focused;
+        let title_style = if highlight {
+            Style::default()
+                .fg(palette.text)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(palette.subtext0)
+        };
+        let mut line = match &row.kind {
+            SessionKind::Agent(agent) => {
+                let right = clock
+                    .since(row.pane_id)
+                    .map(|since| vec![(format_age(cards, since, *now), dim)])
+                    .unwrap_or_default();
+                let mut line = CardLine::text(
+                    TITLE_COLUMN,
+                    vec![(agent_activity(cards, agent).to_owned(), title_style)],
+                    right,
+                );
+                let (glyph, color) = agent_glyph(agent, palette);
+                line.marks
+                    .push((TEXT_COLUMN, status_mark(agent.agent_status)));
+                line.marks
+                    .push((GLYPH_COLUMN, (glyph.to_owned(), Style::default().fg(color))));
+                line
+            }
+            SessionKind::Terminal {
+                tab_label,
+                pane_label,
+                tab_has_one_pane,
+            } => {
+                let mut left = vec![((*tab_label).to_owned(), title_style)];
+                if !(*tab_has_one_pane && pane_label == tab_label) {
+                    left.push((format!(" · {pane_label}"), dim));
+                }
+                let mut line = CardLine::text(TITLE_COLUMN, left, Vec::new());
+                line.marks.push((
+                    GLYPH_COLUMN,
+                    ("$".to_owned(), Style::default().fg(palette.overlay1)),
+                ));
+                line
+            }
+        };
+        line.pane_id = Some(row.pane_id.to_owned());
+        line.highlight = highlight;
+        lines.push(line);
+    }
+    if window.hidden > 0 {
+        lines.push(CardLine::text(
+            TEXT_COLUMN,
+            vec![(
+                format!("… {} {}", cards.label("more", "more"), window.hidden),
+                dim,
+            )],
+            Vec::new(),
+        ));
+    }
+    Some(BuiltCard {
+        index,
+        lines,
+        framed: focused,
+    })
 }
 
 /// Draws left segments, shortening the last one that does not fit, and
@@ -583,12 +627,16 @@ pub(super) fn render_cards_sidebar(
     hits.workspace_body = body;
 
     let home = std::env::var("HOME").ok();
+    let needle = state.sidebar_filter.as_str().trim().to_lowercase();
+    let sessions = SessionIndex::new(snapshot, &needle);
     let context = CardContext {
         snapshot,
         config,
         clock: state.cards_clock,
         now: state.cards_now,
         home: home.as_deref(),
+        sessions: &sessions,
+        focused_limit: usize::from(body.height).saturating_sub(FOCUSED_CARD_CHROME),
     };
     let view = CardsView {
         group_by: cards.group_by,
@@ -960,7 +1008,7 @@ fn render_section(
         &[(
             label.to_owned(),
             Style::default()
-                .fg(palette.overlay1)
+                .fg(palette.subtext0)
                 .add_modifier(Modifier::BOLD),
         )],
         &[(count.to_string(), Style::default().fg(palette.overlay0))],
@@ -980,34 +1028,105 @@ fn render_card(
     let Some(workspace) = snapshot.workspaces.get(card.index) else {
         return;
     };
+    let fill = |buffer: &mut Buffer, area: Rect, color: ratatui::style::Color| {
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                buffer[(x, y)].set_bg(color);
+            }
+        }
+    };
     let selected = state
         .selected_workspace_id
         .is_some_and(|target| target.matches(state.active_endpoint_id, &workspace.workspace_id));
-    let background = if selected {
-        Some(selection_background(palette))
-    } else if workspace.focused {
-        Some(super::sidebar::workspace_active_background(
-            palette,
-            state.selected_workspace_id.is_some(),
-        ))
-    } else {
-        None
-    };
-    if let Some(background) = background {
-        for y in rect.y..rect.bottom() {
-            for x in rect.x..rect.right() {
-                buffer[(x, y)].set_bg(background);
+    // The frame needs room for its corners and one column inside.
+    let framed = card.framed && rect.width >= 6;
+    // The frame's right side; text stops one column before it.
+    let inner_right = rect.right().saturating_sub(2);
+    let first_line = rect.y.saturating_add(u16::from(framed));
+    if selected {
+        fill(buffer, rect, selection_background(palette));
+    } else if framed {
+        fill(
+            buffer,
+            Rect::new(
+                rect.x + 2,
+                first_line,
+                inner_right.saturating_sub(rect.x + 2),
+                rect.bottom().saturating_sub(first_line),
+            ),
+            super::sidebar::workspace_active_background(
+                palette,
+                state.selected_workspace_id.is_some(),
+            ),
+        );
+    }
+
+    let frame_style = Style::default().fg(palette.surface1);
+    let frame_x = rect.x + FRAME_COLUMN;
+    let frame_width = inner_right.saturating_sub(frame_x) + 1;
+    let horizontal = "─".repeat(usize::from(frame_width.saturating_sub(2)));
+    if framed {
+        put_text(
+            buffer,
+            frame_x,
+            rect.y,
+            frame_width,
+            &format!("╭{horizontal}╮"),
+            frame_style,
+        );
+    }
+    let mut y = first_line;
+    for line in &card.lines {
+        if y >= rect.bottom() {
+            break;
+        }
+        let row = Rect::new(rect.x, y, rect.width, 1);
+        if framed {
+            put_text(buffer, frame_x, y, 1, "│", frame_style);
+            put_text(buffer, inner_right, y, 1, "│", frame_style);
+        }
+        if line.highlight {
+            let from = rect.x + 2;
+            fill(
+                buffer,
+                Rect::new(from, y, inner_right.saturating_sub(from), 1),
+                selection_background(palette),
+            );
+            put_text(buffer, from, y, 1, "▎", Style::default().fg(palette.accent));
+        }
+        for (offset, (text, style)) in &line.marks {
+            let x = rect.x.saturating_add(*offset);
+            if x < inner_right {
+                put_text(buffer, x, y, 1, text, *style);
             }
         }
-    }
-    for (offset, line) in card.lines.iter().take(rect.height as usize).enumerate() {
-        let line_rect = Rect::new(rect.x, rect.y + offset as u16, rect.width, 1);
-        draw_line(buffer, line_rect, &line.left, &line.right);
-        if let Some(tab_id) = &line.tab_id {
-            hits.card_tabs.push((line_rect, tab_id.clone()));
+        let text_x = rect.x.saturating_add(line.indent);
+        draw_line(
+            buffer,
+            Rect::new(text_x, y, inner_right.saturating_sub(text_x), 1),
+            &line.left,
+            &line.right,
+        );
+        if let Some(pane_id) = &line.pane_id {
+            hits.card_sessions.push((row, pane_id.clone()));
         }
+        if line.toggle {
+            hits.card_session_toggles
+                .push((row, workspace.workspace_id.clone()));
+        }
+        y += 1;
     }
-    // The whole card selects its workspace; tab lines are checked first.
+    if framed && y < rect.bottom() {
+        put_text(
+            buffer,
+            frame_x,
+            y,
+            frame_width,
+            &format!("╰{horizontal}╯"),
+            frame_style,
+        );
+    }
+    // The whole card selects its workspace; session rows are checked first.
     hits.workspaces.push(WorkspaceHit {
         rect,
         endpoint_id: ClientEndpointId::Local,
@@ -1201,7 +1320,7 @@ impl ClientShellState {
     }
 
     /// Clicks on the card sidebar's own controls: grouping, filter, summary,
-    /// section headers and tab lines. Cards themselves use the shared
+    /// section headers and session rows. Cards themselves use the shared
     /// workspace hits.
     pub(super) fn handle_card_sidebar_click(
         &mut self,
@@ -1253,9 +1372,9 @@ impl ClientShellState {
             outcome.repaint = true;
             return true;
         }
-        if let Some(tab_id) = self.card_tab_at(point) {
+        if let Some(pane_id) = self.card_session_at(point) {
             self.push_endpoint_method(
-                crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget { tab_id }),
+                crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget { pane_id }),
                 outcome,
             );
             return true;
@@ -1263,12 +1382,13 @@ impl ClientShellState {
         false
     }
 
-    pub(super) fn card_tab_at(&self, point: (u16, u16)) -> Option<String> {
+    /// The pane of the session row under `point`.
+    pub(super) fn card_session_at(&self, point: (u16, u16)) -> Option<String> {
         self.hits
-            .card_tabs
+            .card_sessions
             .iter()
             .find(|(rect, _)| super::contains(*rect, point))
-            .map(|(_, tab_id)| tab_id.clone())
+            .map(|(_, pane_id)| pane_id.clone())
     }
 
     /// Runs the footer command, redraws card ages once a minute and saves
